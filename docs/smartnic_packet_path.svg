@@ -1,0 +1,101 @@
+<svg width="100%" viewBox="0 0 680 1290" role="img" xmlns="http://www.w3.org/2000/svg" font-family="&quot;anthropic-sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif">
+<title>Percorso di un pacchetto ICMP da ns0 a ns1, attraverso la VM</title>
+<desc>Diagramma verticale che raggruppa i componenti per contesto di esecuzione: il namespace ns0 con veth0, il namespace predefinito dell'host (attraversato due volte, prima e dopo la VM) con veth0-br, br0, tap0, tap1, br1 e veth1-br, la VM QEMU (un kernel separato, non un namespace) con ens3, brVM ed ens4, e il namespace ns1 con veth1. Ogni collegamento unisce due interfacce poste ai suoi capi.</desc>
+
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#89877F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<!-- ===================== C1: ns0 ===================== -->
+<rect x="190" y="20" width="300" height="106" rx="14" fill="#F3F8FD" stroke="#185FA5" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="205" y="38" font-size="13" font-weight="600" fill="#0C447C">ns0 — network namespace</text>
+
+<rect x="220" y="56" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="1"/>
+<text x="340" y="76" text-anchor="middle" font-size="14" font-weight="600" fill="#0C447C">veth0</text>
+<text x="340" y="94" text-anchor="middle" font-size="12" fill="#185FA5">192.168.100.1/24</text>
+
+<line x1="340" y1="112" x2="340" y2="192" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===================== C2: host (prima della VM) ===================== -->
+<rect x="190" y="156" width="300" height="270" rx="14" fill="#FBF7EC" stroke="#8A6D1D" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="205" y="174" font-size="13" font-weight="600" fill="#6B5314">host — namespace predefinito</text>
+
+<rect x="220" y="192" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="212" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">veth0-br</text>
+<text x="340" y="230" text-anchor="middle" font-size="12" fill="#8A6D1D">peer di veth0</text>
+<line x1="340" y1="248" x2="340" y2="274" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="274" width="240" height="56" rx="8" fill="#F0E1B0" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="294" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">br0</text>
+<text x="340" y="312" text-anchor="middle" font-size="12" fill="#6B5314">bridge software (kernel host)</text>
+<line x1="340" y1="330" x2="340" y2="356" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="356" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="376" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">tap0</text>
+<text x="340" y="394" text-anchor="middle" font-size="12" fill="#8A6D1D">backend rete QEMU (n0)</text>
+
+<line x1="340" y1="412" x2="340" y2="492" stroke="#89877F" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<text x="352" y="456" font-size="11" font-style="italic" fill="#89877F">QEMU</text>
+
+<!-- ===================== C3: VM (non un namespace) ===================== -->
+<rect x="190" y="456" width="300" height="270" rx="14" fill="#EAF7F1" stroke="#0F6E56" stroke-width="1.5"/>
+<text x="205" y="474" font-size="13" font-weight="600" fill="#08503F">VM (QEMU guest) — kernel separato</text>
+
+<rect x="220" y="492" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1"/>
+<text x="340" y="512" text-anchor="middle" font-size="14" font-weight="600" fill="#08503F">ens3</text>
+<text x="340" y="530" text-anchor="middle" font-size="12" fill="#0F6E56">NIC virtio-net (guest)</text>
+<line x1="340" y1="548" x2="340" y2="574" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="574" width="240" height="56" rx="8" fill="#BFE9DA" stroke="#0F6E56" stroke-width="1"/>
+<text x="340" y="594" text-anchor="middle" font-size="14" font-weight="600" fill="#08503F">brVM</text>
+<text x="340" y="612" text-anchor="middle" font-size="12" fill="#08503F">bridge software (kernel VM)</text>
+<line x1="340" y1="630" x2="340" y2="656" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="656" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1"/>
+<text x="340" y="676" text-anchor="middle" font-size="14" font-weight="600" fill="#08503F">ens4</text>
+<text x="340" y="694" text-anchor="middle" font-size="12" fill="#0F6E56">NIC virtio-net (guest)</text>
+
+<line x1="340" y1="712" x2="340" y2="792" stroke="#89877F" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<text x="352" y="756" font-size="11" font-style="italic" fill="#89877F">QEMU</text>
+
+<!-- ===================== C4: host (dopo la VM) ===================== -->
+<rect x="190" y="756" width="300" height="270" rx="14" fill="#FBF7EC" stroke="#8A6D1D" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="205" y="774" font-size="13" font-weight="600" fill="#6B5314">host — namespace predefinito</text>
+
+<rect x="220" y="792" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="812" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">tap1</text>
+<text x="340" y="830" text-anchor="middle" font-size="12" fill="#8A6D1D">backend rete QEMU (n1)</text>
+<line x1="340" y1="848" x2="340" y2="874" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="874" width="240" height="56" rx="8" fill="#F0E1B0" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="894" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">br1</text>
+<text x="340" y="912" text-anchor="middle" font-size="12" fill="#6B5314">bridge software (kernel host)</text>
+<line x1="340" y1="930" x2="340" y2="956" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="220" y="956" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#8A6D1D" stroke-width="1"/>
+<text x="340" y="976" text-anchor="middle" font-size="14" font-weight="600" fill="#6B5314">veth1-br</text>
+<text x="340" y="994" text-anchor="middle" font-size="12" fill="#8A6D1D">peer di veth1</text>
+
+<line x1="340" y1="1012" x2="340" y2="1092" stroke="#89877F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===================== C5: ns1 ===================== -->
+<rect x="190" y="1056" width="300" height="106" rx="14" fill="#F3F8FD" stroke="#185FA5" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="205" y="1074" font-size="13" font-weight="600" fill="#0C447C">ns1 — network namespace</text>
+
+<rect x="220" y="1092" width="240" height="56" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="1"/>
+<text x="340" y="1112" text-anchor="middle" font-size="14" font-weight="600" fill="#0C447C">veth1</text>
+<text x="340" y="1130" text-anchor="middle" font-size="12" fill="#185FA5">192.168.100.2/24</text>
+
+<!-- ===================== legenda ===================== -->
+<rect x="200" y="1188" width="18" height="14" rx="3" fill="#F3F8FD" stroke="#185FA5" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="226" y="1199" font-size="12" fill="#3A3A3A">namespace di rete (netns)</text>
+
+<rect x="200" y="1214" width="18" height="14" rx="3" fill="#EAF7F1" stroke="#0F6E56" stroke-width="1.5"/>
+<text x="226" y="1225" font-size="12" fill="#3A3A3A">VM: kernel separato, non un namespace</text>
+
+<rect x="200" y="1240" width="18" height="14" rx="3" fill="#F0E1B0" stroke="#8A6D1D" stroke-width="1"/>
+<text x="226" y="1251" font-size="12" fill="#3A3A3A">bridge software (switch L2)</text>
+
+</svg>
