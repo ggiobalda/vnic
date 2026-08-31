@@ -112,10 +112,35 @@ Nominato `seed.iso`, gli si assegna volume id `cidata` altrimenti cloud-init non
 xorriso -as genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
 ```
 
+L'output del comando dovrebbe essere simile a questo:
+```bash
+Drive current: -outdev 'stdio:seed.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data,  239g free
+xorriso : WARNING : -volid text does not comply to ISO 9660 / ECMA 119 rules
+Added to ISO image: file '/user-data'='/home/gio/uni/thesis/local-tests/user-data'
+xorriso : UPDATE :       1 files added in 1 seconds
+Added to ISO image: file '/meta-data'='/home/gio/uni/thesis/local-tests/meta-data'
+xorriso : UPDATE :       2 files added in 1 seconds
+ISO image produced: 185 sectors
+Written to medium : 185 sectors at LBA 0
+Writing to 'stdio:seed.iso' completed successfully.
+```
+
 #### 5. Disabilitazione servizio di rete systemd
 Necessario in quanto all'avvio systemd cerca invano un DHCP per assegnare indirizzo IP alle interfacce fornite alla VM, bloccando il boot.
 ```bash
 virt-customize -a debian-12-generic-amd64.qcow2 --run-command 'systemctl mask systemd-networkd-wait-online.service'
+```
+
+Sono necessari una manciata di secondi per eseguire l'azione, e l'output dovrebbe essere così:
+```bash
+[   0.0] Examining the guest ...
+[  10.2] Setting a random seed
+[  10.2] Running: systemctl mask systemd-networkd-wait-online.service
+[  10.3] SELinux relabelling
+[  10.3] Finishing off
 ```
 
 #### 6. Avvio della VM con QEMU
@@ -151,6 +176,8 @@ Una volta eseguiti i passaggi precedenti dovremmo avere il terminale collegato c
 #### 8. Creazione bridge interno VM
 Fatto ciò va creato il bridge interno alla VM, quello che per il momento inoltra tutti i pacchetti ma che andrà sostituito con un filtro che esegue codice eBPF/P4. Verificare il nome delle interfacce nella VM con `ip a`, di default dovrebbero essere `ens3` e `ens4`.
 ```bash
+sudo ip link set ens3 up
+sudo ip link set ens4 up
 sudo ip link add brVM type bridge
 sudo ip link set brVM up
 sudo ip link set ens3 master brVM
@@ -183,10 +210,45 @@ sudo ip netns exec ns0 ping -c 5 -I veth0 192.168.100.2
 ```
 
 ### Risultato
-Il risultato corretto dovrebbe registrare, su ognuno dei 3 tcpdump, il passaggio dei 5 pacchetti. Una cosa da notare è che il TTL (Time To Live) rimane invariato per i 3 punti di ascolto: questo è corretto perché TTL viene decrementato a livello di rete, quando ad esempio attraversa un router, mentre qua i pacchetti viaggiano tramite dispositivi livello data-link, i bridge.
+Il risultato corretto deve registrare, su ognuno dei 3 tcpdump, il passaggio dei 5 pacchetti. In particolare si deve avere lo stesso output su tutte e 3 i punti di ascolto, ovvero:
+```bash
+IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 1, length 64
+IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 1, length 64
+IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 2, length 64
+IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 2, length 64
+IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 3, length 64
+IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 3, length 64
+IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 4, length 64
+IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 4, length 64
+IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 5, length 64
+IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 5, length 64
+```
 
+Il comando di ping deve avere un output come questo:
+```bash
+PING 192.168.100.2 (192.168.100.2) from 192.168.100.1 veth0: 56(84) bytes of data.
+64 bytes from 192.168.100.2: icmp_seq=1 ttl=64 time=0.567 ms
+64 bytes from 192.168.100.2: icmp_seq=2 ttl=64 time=0.481 ms
+64 bytes from 192.168.100.2: icmp_seq=3 ttl=64 time=0.293 ms
+64 bytes from 192.168.100.2: icmp_seq=4 ttl=64 time=0.573 ms
+64 bytes from 192.168.100.2: icmp_seq=5 ttl=64 time=0.590 ms
+
+--- 192.168.100.2 ping statistics ---
+5 packets transmitted, 5 received, 0% packet loss, time 4134ms
+rtt min/avg/max/mdev = 0.293/0.500/0.590/0.110 ms
+```
+Una cosa da notare è che il TTL (Time To Live) rimane invariato per i 3 punti di ascolto: questo è corretto perché TTL viene decrementato a livello di rete, quando ad esempio attraversa un router, mentre qua i pacchetti viaggiano tramite dispositivi livello data-link, i bridge.
+
+### Controprova
 Come controprova è possibile testare se i pacchetti arrivano a destinazione nonostante il bridge della VM sia interrotto:
 ```bash
 sudo ip link set ens3 nomaster
 ```
-A questo punto dovremmo avere l'output di tap1 vuoto, dato che un'interruzione del bridge (ens3 scollegata) dovrebbe comportare interruzione dell'inoltro dei pacchetti attraverso la VM. 
+A questo punto dovremmo avere l'output di tap1 vuoto, dato che un'interruzione del bridge (ens3 scollegata) comporta interruzione dell'inoltro dei pacchetti attraverso la VM.
+
+### Fallimento
+Se il test fallisce è possibile individuare facilmente dove è localizzato il problema rimuovendo il filtro di `icmp` (rieseguire tutti i tcpdump senza `-n icmp`), ed in base a quali registrano dei movimenti:
++ nessuno: problema del veth pair `veth0`-`veth0-br` o del bridge `br0`
++ solo tap0: problema dell'interfaccia `ens3`
++ tap0 e brVM: problema dell'interfaccia `ens4`
++ tutti ma ping fallisce (packet loss): problema del bridge `br1` o del veth pair `veth1`-`veth1-br`
