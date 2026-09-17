@@ -11,6 +11,13 @@ L'infrastruttura di rete utilizzate per testare l'inoltro di pacchetti attravers
 - un **bridge software** (`brVM`), collega internamente alla VM le due interfacce `ens3` e `ens4`.
 
 # Realizzazione
+## Installazione tools necessari
+QEMU come hypervisor, `xorriso` per generare files.iso, `tcpdump` per sniffing dei pacchetti, `guestfs-tools` per usare il comando `virt-customize` (vedi più avanti), `clang` e `libbpf-devel` per compilare file eBPF.
+```bash
+sudo *** install qemu-x86 qemu-tools xorriso tcpdump guestfs-tools clang libbpf-devel
+# *** = apt, zypper, dnf, ....
+```
+
 ## Infrastruttura
 Innanzitutto è necessario realizzare l'infrastruttura sopra spiegata.
 
@@ -156,14 +163,8 @@ Per realizzare la VM ho scelto di usare l'hypervisor QEMU, data la semplicità d
 ```bash
 wget https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 ```
-#### 2. Installazione tools necessari
-QEMU come hypervisor, `xorriso` per generare files.iso, `tcpdump` per sniffing dei pacchetti e `guestfs-tools` per usare il comando `virt-customize` (vedi più avanti).
-```bash
-sudo *** install qemu-x86 qemu-tools xorriso tcpdump guestfs-tools
-# *** = apt, zypper, dnf, ....
-```
 
-#### 3. Creazione dei file di configurazione
+#### 2. Creazione dei file di configurazione
 Guida completa al link https://docs.cloud-init.io/en/latest/tutorial/qemu.html.
 ```bash
 cat > user-data <<'EOF'
@@ -180,7 +181,7 @@ local-hostname: smartnic-vm
 EOF
 ```
 
-#### 4. Generazione del disco per cloud-init
+#### 3. Generazione del disco per cloud-init
 Nominato `seed.iso`, gli si assegna volume id `cidata` altrimenti cloud-init non lo legge. `joliet` e `rock` sono due estensioni al formato ISO9660 richieste da cloud-init.
 ```bash
 xorriso -as genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data
@@ -202,7 +203,7 @@ Written to medium : 185 sectors at LBA 0
 Writing to 'stdio:seed.iso' completed successfully.
 ```
 
-#### 5. Disabilitazione servizio di rete systemd e iniezione dell'eseguibile compilato
+#### 4. Disabilitazione servizio di rete systemd e iniezione dell'eseguibile compilato
 Necessario in quanto all'avvio systemd cerca invano un DHCP per assegnare indirizzo IP alle interfacce fornite alla VM, bloccando il boot. Utilizziamo inoltre lo stesso comando (`virt-customize`) per copiare il file eBPF compilato `my_prog.o` nell'immagine, così che sia disponibile al boot della VM.
 ```bash
 LIBGUESTFS_BACKEND=direct virt-customize -a debian-12-generic-amd64.qcow2 \
@@ -220,7 +221,7 @@ Sono necessari una manciata di secondi per eseguire l'azione, e l'output dovrebb
 [  10.3] Finishing off
 ```
 
-#### 6. Avvio della VM con QEMU
+#### 5. Avvio della VM con QEMU
 Per avviare la macchina applicando le impostazioni preparate prima e altre necessario il comando utilizza le seguenti opzioni:
 + `-enable-kvm`, abilita la virtualizzazione hardware della CPU
 + `-m 1024 -smp 2`, assegna 1024 MB di RAM e 2 CPU virtuali
@@ -245,12 +246,12 @@ qemu-system-x86_64 \
   -nographic
 ```
 
-#### 7. Accesso alla VM
+#### 6. Accesso alla VM
 Una volta eseguiti i passaggi precedenti dovremmo avere il terminale collegato con la VM. Dopo il boot (circa 10 secondi) effettuare il login:
 + user: `debian` (utente default)
 + password: `smartnic` (scelta in `user-data`)
 
-#### 8. Creazione bridge interno VM
+#### 7. Creazione bridge interno VM
 Fatto ciò va creato il bridge interno alla VM, quello che per il momento inoltra tutti i pacchetti ma che andrà sostituito con un filtro che esegue codice eBPF/P4. Verificare il nome delle interfacce nella VM con `ip a`, di default dovrebbero essere `ens3` e `ens4`.
 ```bash
 sudo ip link set ens3 up
@@ -261,8 +262,8 @@ sudo ip link set ens3 master brVM
 sudo ip link set ens4 master brVM
 ```
 
-#### 9. Attacco del filtro XDP
-Il file `my_prog.o` è già presente in `/root/` grazie all'iniezione fatta al punto 5. Lo agganciamo a `ens3`, l'interfaccia da cui entrano i pacchetti nella VM.
+#### 8. Attacco del filtro XDP
+Il file `my_prog.o` è già presente in `/root/` grazie all'iniezione fatta al punto 4. Lo agganciamo a `ens3`, l'interfaccia da cui entrano i pacchetti nella VM.
 ```bash
 sudo ip link set ens3 xdp obj /root/my_prog.o sec xdp
 ip link show ens3
@@ -275,17 +276,17 @@ A questo punto è tutto pronto per fare un test dove si prova a spedire dei pacc
 #### 1. Packet sniffing tap0 e tap1
 Aprire un nuovo terminale ed eseguire tcpdump sull'interfaccia `tap0`, per controllare che i pacchetti entrino nella VM.
 ```bash
-sudo tcpdump -i tap0 -n "icmp or udp"
+sudo tcpdump -i tap0 -n "(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
 ```
 Ripetere il comando in un nuovo terminale per controllare l'interfaccia `tap1`, uscita della VM.
 ```bash
-sudo tcpdump -i tap1 -n "icmp or udp"
+sudo tcpdump -i tap1 -n "(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
 ```
 
 #### 2. Packet sniffing brVM
 Per essere sicuri che i pacchetti attraversino la VM eseguiamo un'altro `tcpdump`, stavolta nel terminale della VM già aperto.
 ```bash
-sudo tcpdump -i brVM -n "icmp or udp"
+sudo tcpdump -i brVM -n "(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
 ```
 
 #### 3. Ping
@@ -297,57 +298,30 @@ sudo ip netns exec ns0 ping -c 5 -I veth0 192.168.100.2
 #### 4. Traffico UDP (verifica del drop)
 Oltre al ping, generiamo traffico UDP per verificare che questo venga effettivamente scartato dal filtro.
 
-Aprire un terminale che funge da ricevitore ed eseguire:
+In un terminale avviare il listener col seguente comando:
 ```bash
 sudo ip netns exec ns1 nc -u -l 9999
 ```
 
-Su un altro terminale inviamo un messaggio UDP verso il ricevitore:
+Su un altro terminale invece inviamo un messaggio UDP verso il ricevitore:
 ```bash
-# terminale B (mittente, ns0)
 echo "test" | sudo ip netns exec ns0 nc -u -w1 -s 192.168.100.1 192.168.100.2 9999
 ```
 
 # Risultato
 Il risultato corretto deve registrare, su ognuno dei 3 tcpdump, il passaggio dei 5 pacchetti ICMP, mentre il pacchetto UDP deve essere registrati solo su `tap0`.
 
-```bash
-IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 1, length 64
-IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 1, length 64
-IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 2, length 64
-IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 2, length 64
-IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 3, length 64
-IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 3, length 64
-IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 4, length 64
-IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 4, length 64
-IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 5, length 64
-IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 5, length 64
-```
-
-Il comando di ping deve avere un output come questo:
-```bash
-PING 192.168.100.2 (192.168.100.2) from 192.168.100.1 veth0: 56(84) bytes of data.
-64 bytes from 192.168.100.2: icmp_seq=1 ttl=64 time=0.567 ms
-64 bytes from 192.168.100.2: icmp_seq=2 ttl=64 time=0.481 ms
-64 bytes from 192.168.100.2: icmp_seq=3 ttl=64 time=0.293 ms
-64 bytes from 192.168.100.2: icmp_seq=4 ttl=64 time=0.573 ms
-64 bytes from 192.168.100.2: icmp_seq=5 ttl=64 time=0.590 ms
-
---- 192.168.100.2 ping statistics ---
-5 packets transmitted, 5 received, 0% packet loss, time 4134ms
-rtt min/avg/max/mdev = 0.293/0.500/0.590/0.110 ms
-```
 Una cosa da notare è che il TTL (Time To Live) rimane invariato per i 3 punti di ascolto: questo è corretto perché TTL viene decrementato a livello di rete, quando ad esempio attraversa un router, mentre qua i pacchetti viaggiano tramite dispositivi livello data-link, i bridge.
 
 ### Controprova
-Come controprova è possibile testare se i pacchetti arrivano a destinazione nonostante il bridge della VM sia interrotto:
+Come controprova è possibile testare se i pacchetti ICMP arrivano a destinazione nonostante il bridge della VM sia interrotto:
 ```bash
 sudo ip link set ens3 nomaster
 ```
 A questo punto dovremmo avere l'output di tap1 vuoto, dato che un'interruzione del bridge (ens3 scollegata) comporta interruzione dell'inoltro dei pacchetti attraverso la VM.
 
 ### Fallimento
-Se il test fallisce è possibile individuare facilmente dove è localizzato il problema rimuovendo il filtro di `icmp` (rieseguire tutti i tcpdump senza `-n icmp`), ed in base a quali registrano dei movimenti:
+Se il test fallisce è possibile individuare facilmente dove è localizzato il problema rimuovendo il filtro sul tipo di pacchetto (rieseguire tutti i tcpdump senza `-n "..."`), ed in base a quali registrano dei movimenti:
 + nessuno: problema del veth pair `veth0`-`veth0-br` o del bridge `br0`
 + solo tap0: problema dell'interfaccia `ens3`
 + tap0 e brVM: problema dell'interfaccia `ens4`
