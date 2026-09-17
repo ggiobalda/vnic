@@ -1,5 +1,5 @@
 # Introduzione
-Questo test serve a simulare l'infrastruttura e la VM utilizzate per emulare una smartNIC. L'intento è quello di tradurre questo test manuale in una espansione del tool **vnic**, implementando inoltre la logica interna alla VM necessaria per poter processare i frame ethernet. Al momento quindi la VM non processa ma inoltra semplicemente i pacchetti in arrivo.
+Questo test serve a simulare l'infrastruttura e la VM utilizzate per emulare una smartNIC. L'intento è quello di tradurre questo test manuale in una espansione del tool **vnic**. Nel test viene utilizzato un semplice programma eBPF che scarta i paccchetti UDP per testare se la VM esegue correttamente la logica di rete.
 
 # Architettura
 L'infrastruttura di rete utilizzate per testare l'inoltro di pacchetti attraverso una VM, visualizzabile tramite un grafico di flusso in `docs/smartnic_packet_path.svg`, è così formata:
@@ -8,7 +8,7 @@ L'infrastruttura di rete utilizzate per testare l'inoltro di pacchetti attravers
 - due **bridge software** (`br0` e `br1`), rappresentano degli switch e servono a inoltrare i pacchetti fra VM e host, che a sua volta inoltra/riceve dai namespaces. Questi componenti sono utili solo per questo test, in quanto svolgo essenzialmente lo stesso compito della funzione `forward`.
 - due **TAP devices** (`tap0` e `tap1`), interfacce virtuali su cui un programma in userspace può leggere/scrive frame ethernet grezzi. Sono il punto di aggancio per l'hypervisor QEMU per poter comunicare con la VM.
 - due **interfacce di rete** (`ens3` e `ens4`), si trovato all'interno della VM e corrispondo ai due TAP a cui è collegato QEMU. Il nome è scelto arbitrariamente dal sistema utilizzato (in questo caso Debian).
-- un **bridge software** (`brVM`), collega internamente alla VM le due interfacce. Questo componente al momento inoltra tutti i pacchetti in arrivo, ma verrà sostituito dalla logica di forwarding allegata con codice eBPF o P4.
+- un **bridge software** (`brVM`), collega internamente alla VM le due interfacce `ens3` e `ens4`.
 
 # Realizzazione
 ## Infrastruttura
@@ -74,6 +74,80 @@ sudo ip link set veth1-br master br1
 sudo ip link set veth1-br up
 ```
 
+## Filtro eBPF
+Il filtro che verrà eseguito nella VM tramite XDP è scritto in C e compilato in bytecode eBPF con `clang`.
+
+#### 1. Codice sorgente
+Il programma droppa i pacchetti UDP e lascia passare tutto il resto (incluso ICMP, usato più avanti per il test). Creare un file contenente questo codice.
+```c
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/in.h>
+#include <bpf/bpf_helpers.h>
+
+SEC("xdp")
+int drop_udp(struct xdp_md *ctx)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct ethhdr *eth = data;
+    struct iphdr *ip = data + sizeof(*eth);
+
+    if ((void *)(eth + 1) > data_end ||
+        (void *)(ip + 1) > data_end)
+        return XDP_PASS;
+
+    return eth->h_proto == __constant_htons(ETH_P_IP) &&
+           ip->protocol == IPPROTO_UDP
+           ? XDP_DROP
+           : XDP_PASS;
+}
+
+char LICENSE[] SEC("license") = "GPL";
+```
+
+#### 2. Compilazione
+Serve `clang` con target BPF, più gli header di `libbpf`.
+```bash
+clang -O2 -target bpf -c my_prog.c -o my_prog.o
+```
+
+Verifica facoltativa del bytecode generato:
+```bash
+llvm-objdump -S my_prog.o
+```
+
+Il cui risultato dovrebbe essere:
+```bash
+my_prog.o:	file format elf64-bpf
+
+Disassembly of section xdp:
+
+0000000000000000 <drop_udp>:
+       0:	b4 00 00 00 02 00 00 00	w0 = 0x2
+       1:	61 12 00 00 00 00 00 00	w2 = *(u32 *)(r1 + 0x0)
+       2:	61 11 04 00 00 00 00 00	w1 = *(u32 *)(r1 + 0x4)
+       3:	bf 23 00 00 00 00 00 00	r3 = r2
+       4:	07 03 00 00 0e 00 00 00	r3 += 0xe
+       5:	2d 13 0c 00 00 00 00 00	if r3 > r1 goto +0xc <L0>
+       6:	bf 23 00 00 00 00 00 00	r3 = r2
+       7:	07 03 00 00 22 00 00 00	r3 += 0x22
+       8:	2d 13 09 00 00 00 00 00	if r3 > r1 goto +0x9 <L0>
+       9:	71 21 0c 00 00 00 00 00	w1 = *(u8 *)(r2 + 0xc)
+      10:	71 23 0d 00 00 00 00 00	w3 = *(u8 *)(r2 + 0xd)
+      11:	64 03 00 00 08 00 00 00	w3 <<= 0x8
+      12:	4c 13 00 00 00 00 00 00	w3 |= w1
+      13:	56 03 04 00 08 00 00 00	if w3 != 0x8 goto +0x4 <L0>
+      14:	71 21 17 00 00 00 00 00	w1 = *(u8 *)(r2 + 0x17)
+      15:	b4 00 00 00 01 00 00 00	w0 = 0x1
+      16:	16 01 01 00 11 00 00 00	if w1 == 0x11 goto +0x1 <L0>
+      17:	b4 00 00 00 02 00 00 00	w0 = 0x2
+<L0>:
+      18:	95 00 00 00 00 00 00 00	exit
+```
+
 ## VM
 Per realizzare la VM ho scelto di usare l'hypervisor QEMU, data la semplicità di gestione e leggerezza. Nella VM gira il sistema Debian 12, ed in particolare si usa l'immagine base `debian-12-generic-amd64.qcow2`. Questa è un'immagine cloud,cioè fatta per essere configurata e gestita senza intervento umano: niente installer, driver di virtualizzazione già presenti e soprattutto un meccanismo (*cloud-init*) pensato per inizializzare la VM.
 **cloud-init**, durante il boot, scansiona i dispositivi collegati alla VM cercandone uno con volume etichettato `cidata` (formato ISO9660 o FAT); una volta trovato, legge i file `user-data`, `meta-data` e `vendor-data` al suo interno e applica la configurazione.
@@ -83,9 +157,9 @@ Per realizzare la VM ho scelto di usare l'hypervisor QEMU, data la semplicità d
 wget https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 ```
 #### 2. Installazione tools necessari
-QEMU come hypervisor, `xorriso` per generare files.iso e `guestfs-tools` per usare il comando `virt-customize` (vedi più avanti).
+QEMU come hypervisor, `xorriso` per generare files.iso, `tcpdump` per sniffing dei pacchetti e `guestfs-tools` per usare il comando `virt-customize` (vedi più avanti).
 ```bash
-sudo *** install qemu-x86 qemu-tools xorriso guestfs-tools
+sudo *** install qemu-x86 qemu-tools xorriso tcpdump guestfs-tools
 # *** = apt, zypper, dnf, ....
 ```
 
@@ -128,10 +202,12 @@ Written to medium : 185 sectors at LBA 0
 Writing to 'stdio:seed.iso' completed successfully.
 ```
 
-#### 5. Disabilitazione servizio di rete systemd
-Necessario in quanto all'avvio systemd cerca invano un DHCP per assegnare indirizzo IP alle interfacce fornite alla VM, bloccando il boot.
+#### 5. Disabilitazione servizio di rete systemd e iniezione dell'eseguibile compilato
+Necessario in quanto all'avvio systemd cerca invano un DHCP per assegnare indirizzo IP alle interfacce fornite alla VM, bloccando il boot. Utilizziamo inoltre lo stesso comando (`virt-customize`) per copiare il file eBPF compilato `my_prog.o` nell'immagine, così che sia disponibile al boot della VM.
 ```bash
-virt-customize -a debian-12-generic-amd64.qcow2 --run-command 'systemctl mask systemd-networkd-wait-online.service'
+LIBGUESTFS_BACKEND=direct virt-customize -a debian-12-generic-amd64.qcow2 \
+  --run-command 'systemctl mask systemd-networkd-wait-online.service' \
+  --copy-in my_prog.o:/root/
 ```
 
 Sono necessari una manciata di secondi per eseguire l'azione, e l'output dovrebbe essere così:
@@ -139,6 +215,7 @@ Sono necessari una manciata di secondi per eseguire l'azione, e l'output dovrebb
 [   0.0] Examining the guest ...
 [  10.2] Setting a random seed
 [  10.2] Running: systemctl mask systemd-networkd-wait-online.service
+[  10.2] Copying: my_prog.o to /root/
 [  10.3] SELinux relabelling
 [  10.3] Finishing off
 ```
@@ -184,33 +261,56 @@ sudo ip link set ens3 master brVM
 sudo ip link set ens4 master brVM
 ```
 
+#### 9. Attacco del filtro XDP
+Il file `my_prog.o` è già presente in `/root/` grazie all'iniezione fatta al punto 5. Lo agganciamo a `ens3`, l'interfaccia da cui entrano i pacchetti nella VM.
+```bash
+sudo ip link set ens3 xdp obj /root/my_prog.o sec xdp
+ip link show ens3
+```
+L'output deve mostrare `prog/xdp id ...` accanto a `ens3`.
+
 # Esecuzione
-A questo punto è tutto pronto per fare un test dove si prova a spedire dei pacchetti dal namespace `ns0` a `ns1`, verificando che questi passino attraverso la VM.
+A questo punto è tutto pronto per fare un test dove si prova a spedire dei pacchetti dal namespace `ns0` a `ns1`, verificando che quelli di tipo ICMP arrivino a destinazione e quelli di tipo UDP vengano droppati dal filtro eBPF nella VM.
 
 #### 1. Packet sniffing tap0 e tap1
 Aprire un nuovo terminale ed eseguire tcpdump sull'interfaccia `tap0`, per controllare che i pacchetti entrino nella VM.
 ```bash
-sudo tcpdump -i tap0 -n icmp
+sudo tcpdump -i tap0 -n "icmp or udp"
 ```
 Ripetere il comando in un nuovo terminale per controllare l'interfaccia `tap1`, uscita della VM.
 ```bash
-sudo tcpdump -i tap1 -n icmp
+sudo tcpdump -i tap1 -n "icmp or udp"
 ```
 
 #### 2. Packet sniffing brVM
 Per essere sicuri che i pacchetti attraversino la VM eseguiamo un'altro `tcpdump`, stavolta nel terminale della VM già aperto.
 ```bash
-sudo tcpdump -i brVM -n icmp
+sudo tcpdump -i brVM -n "icmp or udp"
 ```
 
 #### 3. Ping
-Eseguiamo infine il comando di ping dal namespace `ns0`, attraverso la sua interfaccia `veth0`, verso l'indirizzo IP dell'interfaccia `veth1`, appartente al namespace `ns1`. Si limita a 5 pacchetti.
+Eseguiamo prima il comando di ping dal namespace `ns0`, attraverso la sua interfaccia `veth0`, verso l'indirizzo IP dell'interfaccia `veth1`, appartente al namespace `ns1`. Si limita a 5 pacchetti.
 ```bash
 sudo ip netns exec ns0 ping -c 5 -I veth0 192.168.100.2 
 ```
 
-### Risultato
-Il risultato corretto deve registrare, su ognuno dei 3 tcpdump, il passaggio dei 5 pacchetti. In particolare si deve avere lo stesso output su tutte e 3 i punti di ascolto, ovvero:
+#### 4. Traffico UDP (verifica del drop)
+Oltre al ping, generiamo traffico UDP per verificare che questo venga effettivamente scartato dal filtro.
+
+Aprire un terminale che funge da ricevitore ed eseguire:
+```bash
+sudo ip netns exec ns1 nc -u -l 9999
+```
+
+Su un altro terminale inviamo un messaggio UDP verso il ricevitore:
+```bash
+# terminale B (mittente, ns0)
+echo "test" | sudo ip netns exec ns0 nc -u -w1 -s 192.168.100.1 192.168.100.2 9999
+```
+
+# Risultato
+Il risultato corretto deve registrare, su ognuno dei 3 tcpdump, il passaggio dei 5 pacchetti ICMP, mentre il pacchetto UDP deve essere registrati solo su `tap0`.
+
 ```bash
 IP 192.168.100.1 > 192.168.100.2: ICMP echo request, id 17831, seq 1, length 64
 IP 192.168.100.2 > 192.168.100.1: ICMP echo reply, id 17831, seq 1, length 64
