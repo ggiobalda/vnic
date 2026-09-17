@@ -62,6 +62,13 @@ struct RunArgs {
     /// Where to record the forwarder's process id.
     #[arg(long)]
     pid_file: Option<PathBuf>,
+    /// Optional eBPF source file attached
+    #[arg(long, conflicts_with = "attach_p4")]
+    attach_ebpf: Option<PathBuf>,
+    /// Optional P4 source file attached
+    #[arg(long, conflicts_with = "attach_ebpf")]
+    attach_p4: Option<PathBuf>,
+    // Up to one of the attachments at a time is possible
 }
 
 #[derive(Args, Debug)]
@@ -71,6 +78,13 @@ struct UpArgs {
     /// Where to record the forwarder's process id.
     #[arg(long)]
     pid_file: Option<PathBuf>,
+    /// Optional eBPF source file attached
+    #[arg(long, conflicts_with = "attach_p4")]
+    attach_ebpf: Option<PathBuf>,
+    /// Optional P4 source file attached
+    #[arg(long, conflicts_with = "attach_ebpf")]
+    attach_p4: Option<PathBuf>,
+    // Up to one of the attachments at a time is possible
 }
 
 #[derive(Args, Debug)]
@@ -130,10 +144,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Create(args) => create(&args.link),
-        Command::Run(args) => run(&args.name, args.pid_file),
+        Command::Run(args) => run(&args.name, args.pid_file, args.attach_ebpf, args.attach_p4),
         Command::Up(args) => {
             create(&args.link)?;
-            run(&args.link.name, args.pid_file)
+            run(&args.link.name, args.pid_file, args.attach_ebpf, args.attach_p4)
         }
         Command::Status(args) => status(&args.name),
         Command::Stop(args) => stop(&args.name, args.pid_file),
@@ -388,12 +402,27 @@ fn forward(
     Ok(forwarded)
 }
 
-fn run(name: &str, pid_file: Option<PathBuf>) -> Result<()> {
+fn run(
+    name: &str,
+    pid_file: Option<PathBuf>,
+    attach_ebpf: Option<PathBuf>,
+    attach_p4: Option<PathBuf>,
+) -> Result<()> {
     require_root("running the packet forwarder")?;
     let names = Names::new(name)?;
     if !link_exists(&names.inner_left) || !link_exists(&names.inner_right) {
         bail!("cable '{name}' is not complete; run `vnic create {name}` first");
     }
+
+    let is_emulation = attach_ebpf.is_some() || attach_p4.is_some();
+    if is_emulation {
+        ip(&["tuntap", "add", "dev", "tap0", "mode", "tap"])?;
+        ip(&["link", "set", "dev", "tap0", "up"])?;
+        ip(&["tuntap", "add", "dev", "tap1", "mode", "tap"])?;
+        ip(&["link", "set", "dev", "tap1", "up"])?;
+        println!("[DEV] create interfacce tap0 e tap1 per emulazione");
+    }
+
     let (left_tx, left_rx) = open_channel(&names.inner_left)?;
     let (right_tx, right_rx) = open_channel(&names.inner_right)?;
     let pid_file = pid_file.unwrap_or_else(|| default_pid_file(name));
@@ -429,6 +458,13 @@ fn run(name: &str, pid_file: Option<PathBuf>) -> Result<()> {
         "stopped '{}': {} frames left-to-right, {} frames right-to-left",
         name, left_to_right, right_to_left
     );
+
+    if is_emulation {
+        ip(&["link", "del", "dev", "tap0"])?;
+        ip(&["link", "del", "dev", "tap1"])?;
+        println!("[DEV] rimosse interfacce tap0 e tap1");
+    }
+
     Ok(())
 }
 
