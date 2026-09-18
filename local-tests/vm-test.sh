@@ -15,6 +15,9 @@
 # - rimozione dei bridge, il cui lavoro di inoltro viene fatto
 #   direttamente dal daemon vnic
 
+# stop su errori (-e), variabili non definite (-u) o errori nelle pipe (-o pipefail)
+set -euo pipefail
+
 # ------------------------------ UTILITY ------------------------------
 
 IMG="debian-12-generic-amd64.qcow2"
@@ -77,7 +80,7 @@ setup_veth() {
 
 setup_tap() {
     log "creazione tap$1"
-    link_exists tap"$1" || sudo up tuntap add dev tap"$1" mode tap user "$(whoami)"
+    link_exists tap"$1" || sudo ip tuntap add dev tap"$1" mode tap user "$(whoami)"
     sudo ip link set tap"$1" up
 }
 
@@ -206,7 +209,7 @@ run_test() {
     timeout "${PCAP_SECONDS}" sudo tcpdump -i tap0 -n "$filter" -w "$PCAP_DIR"/tap0.pcap &
     local pid_tap0=$!
     timeout "${PCAP_SECONDS}" sudo tcpdump -i tap1 -n "$filter" -w "$PCAP_DIR"/tap1.pcap &
-    local pid_tap0=$!
+    local pid_tap1=$!
     sleep 1 # evita race condition di tcpdump con ping
 
     log "ping ICMP ns0 -> ns1"
@@ -221,10 +224,10 @@ run_test() {
 
     # output del test: numero di righe dei file pcap con icmp e udp (wc -l conta le righe)
     local icmp_tap0 icmp_tap1 udp_tap0 udp_tap1
-    icmp_tap0=$(sudo tcpdump -r "$CAP_DIR/tap0.pcap" -n icmp 2>/dev/null | wc -l)
-    icmp_tap1=$(sudo tcpdump -r "$CAP_DIR/tap1.pcap" -n icmp 2>/dev/null | wc -l)
-    udp_tap0=$(sudo tcpdump -r "$CAP_DIR/tap0.pcap" -n udp 2>/dev/null | wc -l)
-    udp_tap1=$(sudo tcpdump -r "$CAP_DIR/tap1.pcap" -n udp 2>/dev/null | wc -l)
+    icmp_tap0=$(sudo tcpdump -r "$PCAP_DIR/tap0.pcap" -n icmp 2>/dev/null | wc -l)
+    icmp_tap1=$(sudo tcpdump -r "$PCAP_DIR/tap1.pcap" -n icmp 2>/dev/null | wc -l)
+    udp_tap0=$(sudo tcpdump -r "$PCAP_DIR/tap0.pcap" -n udp 2>/dev/null | wc -l)
+    udp_tap1=$(sudo tcpdump -r "$PCAP_DIR/tap1.pcap" -n udp 2>/dev/null | wc -l)
     log "risultati: ICMP tap0=$icmp_tap0 tap1=$icmp_tap1 | UDP tap0=$udp_tap0 tap1=$udp_tap1"
 
     # controllo risultato in base al numero di pacchetti registrati sulle tap
@@ -262,7 +265,7 @@ case "${1:-}" in
         build_seed_iso
         prepare_image
         start_vm
-        log "infrastruttura e VM pronte; esegui './vm-test.sh test' per testare" 
+        log "infrastruttura e VM pronte; esegui './vm-test.sh run' per testare" 
         ;;
     
     run)
@@ -276,7 +279,7 @@ case "${1:-}" in
         ;;
     
     *)
-        echo "Uso: $0 {up|test|status|down}"
+        echo "Uso: $0 {up|run|status|down}"
         exit 1
         ;;
 esac
