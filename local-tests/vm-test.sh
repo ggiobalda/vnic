@@ -7,6 +7,7 @@
 # Differenze con VM-test.md:
 # - inezione di file oggetto eBPF fatta nel cloud-config
 # - comandi da eseguire in VM caricati nel cloud-config
+# - tcpdump solo su tap0 e tap1
 #
 # Differenze con main.rs saranno:
 # - codice eBPF caricato dall'utente, mentre qui se ne usa uno di test
@@ -27,12 +28,13 @@ OBJ="my_prog.o"
 MAC0="52:54:00:12:34:56"
 MAC1="52:54:00:12:34:57"
 
+# files di appoggio per pid del processo qemu e log di qemu
 QEMU_PID_FILE="/tmp/smartnic-vm.pid"
 QEMU_LOG="/tmp/smartnic-vm.log"
-#
-#CAP_DIR="/tmp/smartnic-captures"
-#CAP_SECONDS=8
 
+# packet capture: tcpdump su tap0 e tap1 salvato in formato .pcap
+PCAP_DIR="/tmp/smartnic-captures"
+PCAP_SECONDS=8
 
 log() {
     echo "[vm-test] $*"
@@ -64,10 +66,10 @@ setup_namespace() {
 
 setup_veth() {
     log "creazione veth$1, posizionamento e assegnamento IP"
-    if !link_exists veth"$1"-br; then
+    if ! link_exists veth"$1"-br; then
         sudo ip link add veth"$1" type veth peer name veth"$1"-br
         sudo ip link set veth"$1" netns ns"$1"
-        sudo ip netns exec ns"$1" ip addr add 192.168.100."$1"/24 dev veth"$1"
+        sudo ip netns exec ns"$1" ip addr add 192.168.100."$(( $1 + 1 ))"/24 dev veth"$1"
         sudo ip netns exec ns"$1" ip link set veth"$1" up
         sudo ip netns exec ns"$1" ip link set lo up
     fi
@@ -81,7 +83,7 @@ setup_tap() {
 
 setup_host_bridge() {
     log "creazione br$1"
-    if !link_exists br"$1"; then
+    if ! link_exists br"$1"; then
         sudo ip link add br"$1" type bridge
         sudo ip link set br"$1" up
         sudo ip link set tap"$1" master br"$1"
@@ -149,7 +151,7 @@ start_vm() {
     require_file "$IMG"
     require_file "$SEED"
 
-    # controllo se esiste già VM in esecuzione
+    # controllo se esiste già VM in esecuzione con kill -0
     if [[ -f "$QEMU_PID_FILE" ]] && kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
         log "una VM risulta già in esecuzione (pid $(cat "$QEMU_PID_FILE")); usa 'down' prima di riusare 'up'"
         exit 1
@@ -174,7 +176,8 @@ start_vm() {
 }
 
 stop_vm() {
-    if [[ -f "$QEMU_PID_FILE"]]; then
+    # individua pid di qemu, invia SIGTERM e aspetta che termini
+    if [[ -f "$QEMU_PID_FILE" ]]; then
         local pid
         pid="$(cat "$QEMU_PID_FILE")"
         if kill -0 "$pid" 2>/dev/null; then
@@ -188,18 +191,73 @@ stop_vm() {
     fi
 }
 
+# ----------------------------- ESECUZIONE -----------------------------
+
+run_test() {
+    # pulizia pre test
+    mkdir -p "$PCAP_DIR"
+    sudo rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
+
+    local filter="(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
+
+    # tcpdump su tap0 e tap1 con filtro su tipo di pacchetto e host
+    # output salvato in apposita directory
+    log "avvio cattura su tap0 e tap1 per ${PCAP_SECONDS}s"
+    timeout "${PCAP_SECONDS}" sudo tcpdump -i tap0 -n "$filter" -w "$PCAP_DIR"/tap0.pcap &
+    local pid_tap0=$!
+    timeout "${PCAP_SECONDS}" sudo tcpdump -i tap1 -n "$filter" -w "$PCAP_DIR"/tap1.pcap &
+    local pid_tap0=$!
+    sleep 1 # evita race condition di tcpdump con ping
+
+    log "ping ICMP ns0 -> ns1"
+    sudo ip netns exec ns0 ping -c 5 -I veth0 192.168.100.2 || true
+
+    log "traffico UDP ns0 -> ns1 (deve essere scartato dal filtro)"
+    ( sudo ip netns exec ns1 timeout 3 nc -u -l 9999 & ) # in una subshell avvio in background il listener
+    sleep 0.5 # evita race condition del listener con sender
+    echo "test" | sudo ip netns exec ns0 nc -u -w1 -s 192.168.100.1 192.168.100.2 9999 || true
+
+    wait "$pid_tap0" "$pid_tap1" 2>/dev/null || true # attende termine dei due tcpdump
+
+    # output del test: numero di righe dei file pcap con icmp e udp (wc -l conta le righe)
+    local icmp_tap0 icmp_tap1 udp_tap0 udp_tap1
+    icmp_tap0=$(sudo tcpdump -r "$CAP_DIR/tap0.pcap" -n icmp 2>/dev/null | wc -l)
+    icmp_tap1=$(sudo tcpdump -r "$CAP_DIR/tap1.pcap" -n icmp 2>/dev/null | wc -l)
+    udp_tap0=$(sudo tcpdump -r "$CAP_DIR/tap0.pcap" -n udp 2>/dev/null | wc -l)
+    udp_tap1=$(sudo tcpdump -r "$CAP_DIR/tap1.pcap" -n udp 2>/dev/null | wc -l)
+    log "risultati: ICMP tap0=$icmp_tap0 tap1=$icmp_tap1 | UDP tap0=$udp_tap0 tap1=$udp_tap1"
+
+    # controllo risultato in base al numero di pacchetti registrati sulle tap
+    local ok=1
+    if [[ "$icmp_tap0" -lt 5 || "$icmp_tap1" -lt 5 ]]; then
+        log "FAIL: ICMP non ha attraversato la VM come atteso"
+        ok=0
+    fi
+    if [[ "$udp_tap0" -lt 1 || "$udp_tap1" -ne 0 ]]; then
+        log "FAIL: UDP non è stato droppato come atteso"
+        ok=0
+    fi
+
+    if [[ "$ok" -eq 1 ]]; then
+        log "PASS: ICMP attraversa la VM, UDP viene droppato dal filtro XDP"
+    else
+        log "vedi $CAP_DIR/tap0.pcap e $CAP_DIR/tap1.pcap per il dettaglio"
+        exit 1
+    fi
+}
+
 # ---------------------------- ENTRY POINT ----------------------------
 case "${1:-}" in
     up)
         compile_ebpf
+        setup_namespace 0
         setup_namespace 1
-        setup_namespace 2
+        setup_veth 0
         setup_veth 1
-        setup_veth 2
+        setup_tap 0
         setup_tap 1
-        setup_tap 2
+        setup_host_bridge 0
         setup_host_bridge 1
-        setup_host_bridge 2
         generate_cloud_init
         build_seed_iso
         prepare_image
@@ -208,6 +266,7 @@ case "${1:-}" in
         ;;
     
     run)
+        run_test
         ;;
 
     status)
