@@ -141,7 +141,7 @@ EOF
 
 build_seed_iso() {
     log "generazione $SEED"
-    xorriso -as genisoimage -output "$SEED" -volid cidata -joliet -rock "$UD" "$MD"
+    xorriso -as genisoimage -output "$SEED" -volid cidata -joliet -rock "$UD" "$MD" &>/dev/null
 }
 
 prepare_image() {
@@ -244,9 +244,47 @@ run_test() {
     if [[ "$ok" -eq 1 ]]; then
         log "PASS: ICMP attraversa la VM, UDP viene droppato dal filtro XDP"
     else
-        log "vedi $CAP_DIR/tap0.pcap e $CAP_DIR/tap1.pcap per il dettaglio"
+        log "vedi $PCAP_DIR/tap0.pcap e $PCAP_DIR/tap1.pcap per il dettaglio"
         exit 1
     fi
+}
+
+# ------------------------------ PULIZIA ------------------------------
+
+teardown() {
+    log "rimozione infrastruttura host"
+    link_exists tap0 && sudo ip link del tap0 || true
+    link_exists tap1 && sudo ip link del tap1 || true
+    link_exists br0 && sudo ip link del br0 || true
+    link_exists br1 && sudo ip link del br1 || true
+    link_exists veth0-br && sudo ip link del veth0-br || true
+    link_exists veth1-br && sudo ip link del veth1-br || true
+    netns_exists ns0 && sudo ip netns del ns0 || true
+    netns_exists ns1 && sudo ip netns del ns1 || true
+}
+
+status() {
+    if [[ -f "$QEMU_PID_FILE" ]] && kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
+        log "VM in esecuzione, pid: $(cat "$QEMU_PID_FILE")"
+    else
+        log "Nessuna VM in esecuzione"
+    fi
+
+    for i in ns0 ns1; do
+        if netns_exists "$i"; then
+            log "namespace $i presente"
+        else
+            log "namespace $i assente"
+        fi
+    done
+
+    for i in veth0-br br0 tap0 tap1 br1 veth1-br; do
+        if link_exists "$i"; then
+            log "interfaccia $i presente"
+        else
+            log "interfaccia $i assente"
+        fi
+    done
 }
 
 # ---------------------------- ENTRY POINT ----------------------------
@@ -273,9 +311,13 @@ case "${1:-}" in
         ;;
 
     status)
+        status
         ;;
     
     down)
+        stop_vm
+        teardown
+        log "pulizia completata"
         ;;
     
     *)
