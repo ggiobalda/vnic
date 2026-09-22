@@ -20,7 +20,8 @@ set -euo pipefail
 
 # ------------------------------ UTILITY ------------------------------
 
-IMG="debian-12-generic-amd64.qcow2"
+BASE_IMG="debian-12-generic-amd64.qcow2"
+IMG="debian-overlay.qcow2"
 SEED="seed.iso"
 UD="user-data"
 MD="meta-data"
@@ -113,7 +114,7 @@ generate_cloud_init() {
     ebpf_b64="$(base64 -w0 "$OBJ")"
 
     cat > "$MD" <<EOF
-instance-id: smartnic-test
+instance-id: smartnic-test-$RANDOM
 local-hostname: smartnic-vm
 EOF
 
@@ -145,9 +146,13 @@ build_seed_iso() {
 }
 
 prepare_image() {
+    require_file "$BASE_IMG"
+    log "creazione overlay immagine VM"
+    qemu-img create -F qcow2 -b "$BASE_IMG" -f qcow2 "$IMG" &>/dev/null
+
     log "disabilitazione servizio di rete systemd"
     LIBGUESTFS_BACKEND=direct virt-customize -a "$IMG" \
-        --run-command 'systemctl mask systemd-networkd-wait-online.service'
+        --run-command 'systemctl mask systemd-networkd.service systemd-networkd-wait-online.service'
 }
 
 start_vm() {
@@ -232,7 +237,7 @@ run_test() {
 
     # controllo risultato in base al numero di pacchetti registrati sulle tap
     local ok=1
-    if [[ "$icmp_tap0" -lt 5 || "$icmp_tap1" -lt 5 ]]; then
+    if [[ "$icmp_tap0" -lt 10 || "$icmp_tap1" -lt 10 ]]; then
         log "FAIL: ICMP non ha attraversato la VM come atteso"
         ok=0
     fi
@@ -261,6 +266,7 @@ teardown() {
     link_exists veth1-br && sudo ip link del veth1-br || true
     netns_exists ns0 && sudo ip netns del ns0 || true
     netns_exists ns1 && sudo ip netns del ns1 || true
+    rm -f  "$IMG" "$SEED" "$UD" "$MD" "$OBJ"
 }
 
 status() {
