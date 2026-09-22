@@ -179,8 +179,22 @@ start_vm() {
         > "$QEMU_LOG" 2>&1 &
     echo $! > "$QEMU_PID_FILE"
 
-    log "attesa boot e applicazione cloud-init (~20s)"
-    sleep 20
+    # polling della VM: attendo termine cloud-init leggendo QEMU_LOG
+    log "attesa completamento boot e cloud-init..."
+    local timeout=40
+    local elapsed=0
+    
+    while [[ $elapsed -lt $timeout ]]; do
+        if grep -qi "Cloud-init.*finished" "$QEMU_LOG" 2>/dev/null; then
+            log "VM pronta (completato in ${elapsed}s)"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    
+    log "errore: timeout attesa VM dopo ${timeout}s. Controlla $QEMU_LOG"
+    exit 1
 }
 
 stop_vm() {
