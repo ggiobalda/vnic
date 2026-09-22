@@ -5,8 +5,10 @@
 # semplice per trovare bug rispetto al codice rust definitivo.
 #
 # Differenze con VM-test.md:
-# - inezione di file oggetto eBPF fatta nel cloud-config
-# - comandi da eseguire in VM caricati nel cloud-config
+# - inezione di file oggetto eBPF e comandi da eseguire in VM
+#   fatte nel cloud-config
+# - disabilitazione systemd non necessaria grazie a file network config
+#   in cloud-config
 # - tcpdump solo su tap0 e tap1
 #
 # Differenze con main.rs saranno:
@@ -23,8 +25,9 @@ set -euo pipefail
 BASE_IMG="debian-12-generic-amd64.qcow2"
 IMG="debian-overlay.qcow2"
 SEED="seed.iso"
-UD="user-data"
 MD="meta-data"
+NC="network-config"
+UD="user-data"
 
 SRC="my_prog.c"
 OBJ="my_prog.o"
@@ -108,7 +111,7 @@ compile_ebpf() {
 
 generate_cloud_init() {
     require_file "$OBJ"
-    log "generazione $UD e $MD"
+    log "generazione $MD, $NC e $UD"
     
     local ebpf_b64
     ebpf_b64="$(base64 -w0 "$OBJ")"
@@ -116,6 +119,17 @@ generate_cloud_init() {
     cat > "$MD" <<EOF
 instance-id: smartnic-test-$RANDOM
 local-hostname: smartnic-vm
+EOF
+
+cat > "$NC" <<EOF
+version: 2
+ethernets:
+  ens3:
+    addresses:
+      - 10.0.0.1/24
+  ens4:
+    addresses:
+      - 10.0.0.2/24
 EOF
 
     cat > "$UD" <<EOF
@@ -130,29 +144,25 @@ write_files:
     content: ${ebpf_b64}
     permissions: '0644'
 runcmd:
-  - [ ip, link, set, ens3, up ]
-  - [ ip, link, set, ens4, up ]
-  - [ ip, link, add, brVM, type, bridge ]
-  - [ ip, link, set, brVM, up ]
-  - [ ip, link, set, ens3, master, brVM ]
-  - [ ip, link, set, ens4, master, brVM ]
-  - [ ip, link, set, ens3, xdp, obj, /root/${OBJ}, sec, xdp ]
+  - ip link set ens3 up
+  - ip link set ens4 up
+  - ip link add brVM type bridge
+  - ip link set brVM up
+  - ip link set ens3 master brVM
+  - ip link set ens4 master brVM
+  - ip link set ens3 xdp obj /root/${OBJ} sec xdp
 EOF
 }
 
 build_seed_iso() {
     log "generazione $SEED"
-    xorriso -as genisoimage -output "$SEED" -volid cidata -joliet -rock "$UD" "$MD" &>/dev/null
+    xorriso -as genisoimage -output "$SEED" -volid cidata -joliet -rock "$MD" "$NC" "$UD" &>/dev/null
 }
 
 prepare_image() {
     require_file "$BASE_IMG"
     log "creazione overlay immagine VM"
     qemu-img create -F qcow2 -b "$BASE_IMG" -f qcow2 "$IMG" &>/dev/null
-
-    log "disabilitazione servizio di rete systemd"
-    LIBGUESTFS_BACKEND=direct virt-customize -a "$IMG" \
-        --run-command 'systemctl mask systemd-networkd.service systemd-networkd-wait-online.service'
 }
 
 start_vm() {
@@ -180,7 +190,7 @@ start_vm() {
     echo $! > "$QEMU_PID_FILE"
 
     # polling della VM: attendo termine cloud-init leggendo QEMU_LOG
-    log "attesa completamento boot e cloud-init..."
+    log "attesa completamento boot e cloud-init (30s circa)..."
     local timeout=40
     local elapsed=0
     
@@ -216,10 +226,7 @@ stop_vm() {
 # ----------------------------- ESECUZIONE -----------------------------
 
 run_test() {
-    # pulizia pre test
     mkdir -p "$PCAP_DIR"
-    sudo rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
-
     local filter="(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
 
     # tcpdump su tap0 e tap1 con filtro su tipo di pacchetto e host
@@ -280,7 +287,8 @@ teardown() {
     link_exists veth1-br && sudo ip link del veth1-br || true
     netns_exists ns0 && sudo ip netns del ns0 || true
     netns_exists ns1 && sudo ip netns del ns1 || true
-    rm -f  "$IMG" "$SEED" "$UD" "$MD" "$OBJ"
+    rm -f  "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ"
+    sudo rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
 }
 
 status() {
