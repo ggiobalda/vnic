@@ -126,6 +126,82 @@ Vedi examples/ per filtri di prova pronti all'uso, ciascuno con un proprio READM
 EOF
 }
 
+# --------------------------- CONTROLLI UP ---------------------------
+
+parse_up_args() {
+    NAME=""
+    ATTACH_EBPF=""
+    ATTACH_P4=""
+    ASSUME_YES=0
+
+    # caso senza argomenti o con opzione come primo arg
+    if [[ $# -eq 0 || "$1" == -* ]]; then
+        echo "errore: 'up' richiede un nome" >&2
+        usage
+        exit 1
+    fi
+
+    NAME="$1"
+    shift # scala argomenti a sx di una posizione ($2->$1, $3->$2, ...)
+
+    # loop sugli argomenti
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --attach-ebpf)
+                if [[ -n "$ATTACH_P4" ]]; then
+                    echo "errore: --attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
+                    exit 1
+                else
+                    ATTACH_EBPF="$2"
+                    shift 2 
+                fi
+                ;;
+
+            --attach-p4)
+                if [[ -n "$ATTACH_EBPF" ]]; then
+                    echo "errore: --attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
+                    exit 1
+                else
+                    ATTACH_P4="$2"
+                    shift 2
+                fi 
+                ;;
+
+            -y|--yes)
+                ASSUME_YES=1
+                shift 
+                ;;
+
+            *)
+                echo "errore: opzione sconosciuta '$1'" >&2
+                usage
+                exit 1 
+                ;;
+        esac
+    done
+}
+
+check_dependencies() {
+    require_cmd ip
+    require_cmd qemu-system-x86_64
+    require_cmd qemu-img
+    require_cmd xorriso
+    if [[ "$ATTACH_EBPF" == *.c ]]; then require_cmd clang; fi
+    if [[ -n "$ATTACH_P4" ]]; then require_cmd p4c-ebpf; fi
+    return 0
+}
+
+# controlla che ci sia una sola istanza up alla volta
+check_not_running() {
+    for pid_file in "$TESTBED_DIR"/vnic-*.pid; do
+        if [[ -f "$pid_file" ]]; then
+            if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                die "un'istanza è già attiva (pid: $(cat "$pid_file")); usa 'down' prima di un nuovo 'up'"
+            fi
+        fi
+    done
+}
+
 # --------------------------- INFRASTRUTTURA ---------------------------
 
 setup_namespace() {
@@ -356,8 +432,13 @@ teardown() {
 # ------------------------------ COMANDI ------------------------------
 
 cmd_up() {
+    parse_up_args "$@"
     require_root "up"
+    set_instance_files "$NAME"
     mkdir -p "$TESTBED_DIR"
+
+    check_dependencies
+    check_not_running
     
     for i in {0,1}; do
         setup_namespace $i
@@ -370,6 +451,10 @@ cmd_up() {
     build_seed_iso
     prepare_image
     start_vm
+
+    log "istanza '$NAME' pronta (filtro: ${ATTACH_EBPF:-${ATTACH_P4:-nessuno}})"
+    log "ns0 = 192.168.100.1, ns1 = 192.168.100.2"
+    log "prova: sudo ip netns exec ns0 ping -c 3 192.168.100.2"
 }
 
 cmd_down() {
