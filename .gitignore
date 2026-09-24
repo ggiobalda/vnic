@@ -1,4 +1,3 @@
 target/
 rawnc
-local-tests/*
-!local-tests/vm-test.sh
+testbed/*
