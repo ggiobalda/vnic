@@ -202,64 +202,113 @@ check_not_running() {
     done
 }
 
+# ------------------------------ FILTRO ------------------------------
+
+# produce in OBJ il file oggetto eBPF da caricare nella VM
+# (vuoto se l'utente non ha inserito un programma P4 o EBPF)
+resolve_obj() {
+    OBJ=""
+
+    if [[ -n "$ATTACH_EBPF" ]]; then
+        require_file "$ATTACH_EBPF"
+        case "$ATTACH_EBPF" in
+            *.o)
+                log "uso file oggetto eBPF $ATTACH_EBPF"
+                OBJ="$ATTACH_EBPF"
+                ;;
+
+            *.c)
+                log "compilazione $ATTACH_EBPF -> $OBJ_OUT"
+                clang -O2 -target bpf -c "$ATTACH_EBPF" -o "$OBJ_OUT"
+                OBJ="$OBJ_OUT"
+                ;;
+
+            *)
+                die "--attach-ebpf accetta solo file .c o .o"
+                ;;
+
+        esac
+
+    elif [[ -n "$ATTACH_P4" ]]; then
+        require_file "$ATTACH_P4"
+        if [[ "$ATTACH_P4" != *.p4 ]]; then
+            die "--attach-p4 accetta solo file .p4"
+        fi
+        compile_p4
+    fi
+}
+
+compile_p4() {
+    die "[DEV] Implementare compilazione P4 -> eBPF" 
+}
+
 # --------------------------- INFRASTRUTTURA ---------------------------
 
 setup_namespace() {
     log "creazione namespace ns$1"
-    netns_exists ns"$1" || sudo ip netns add ns"$1"
+    netns_exists ns"$1" || ip netns add ns"$1"
 }
 
 setup_veth() {
-    log "creazione veth$1, posizionamento e assegnamento IP"
+    log "creazione veth$1, posizionamento in ns$1 e assegnamento IP"
     if ! link_exists veth"$1"-br; then
-        sudo ip link add veth"$1" type veth peer name veth"$1"-br
-        sudo ip link set veth"$1" netns ns"$1"
-        sudo ip netns exec ns"$1" ip addr add 192.168.100."$(( $1 + 1 ))"/24 dev veth"$1"
-        sudo ip netns exec ns"$1" ip link set veth"$1" up
-        sudo ip netns exec ns"$1" ip link set lo up
+        ip link add veth"$1" type veth peer name veth"$1"-br
+        ip link set veth"$1" netns ns"$1"
+        ip netns exec ns"$1" ip addr add 192.168.100."$(( $1 + 1 ))"/24 dev veth"$1"
+        ip netns exec ns"$1" ip link set veth"$1" up
+        ip netns exec ns"$1" ip link set lo up
     fi
 }
 
 setup_tap() {
     log "creazione tap$1"
-    link_exists tap"$1" || sudo ip tuntap add dev tap"$1" mode tap user "$(whoami)"
-    sudo ip link set tap"$1" up
+    link_exists tap"$1" || ip tuntap add dev tap"$1" mode tap
+    ip link set tap"$1" up
 }
 
 setup_host_bridge() {
     log "creazione br$1"
     if ! link_exists br"$1"; then
-        sudo ip link add br"$1" type bridge
-        sudo ip link set br"$1" up
-        sudo ip link set tap"$1" master br"$1"
-        sudo ip link set veth"$1"-br master br"$1"
-        sudo ip link set veth"$1"-br up
+        ip link add br"$1" type bridge
+        ip link set br"$1" up
+        ip link set tap"$1" master br"$1"
+        ip link set veth"$1"-br master br"$1"
+        ip link set veth"$1"-br up
     fi
-}
-
-# ---------------------------- FILTRO EBPF ----------------------------
-
-compile_ebpf() {
-    require_file "$SRC"
-    log "comiplazione $SRC -> $OBJ"
-    clang -O2 -target bpf -c "$SRC" -o "$OBJ"
 }
 
 # --------------------------------- VM ---------------------------------
 
+# ritorna 0 se immagine già presente in testbed/, altrimenti la scarica
+ensure_base_image() {
+    if [[ -f "$BASE_IMG" ]]; then return 0; fi
+
+    log "immagine base non trovata in $TESTBED_DIR"
+    if [[ "$ASSUME_YES" -eq 0 ]]; then
+        local answer
+        read -rp "[vnic] scaricarla ora da cloud.debian.org (~400MB)? [s/N] " answer
+        if [[ "$answer" != [sS] ]]; then
+            die "download annullato"
+        fi
+    fi
+
+    require_cmd wget
+    log "download immagine base..."
+    # scarico su file temporaneo: se il download si interrompe non resta un'immagine corrotta
+    wget -O "$BASE_IMG.part" "$BASE_IMG_URL"
+    mv "$BASE_IMG.part" "$BASE_IMG"
+}
+
 generate_cloud_init() {
-    require_file "$OBJ"
-    log "generazione $MD, $NC e $UD"
-    
-    local ebpf_b64
-    ebpf_b64="$(base64 -w0 "$OBJ")"
+    log "generazione file cloud-init in $TESTBED_DIR"
 
     cat > "$MD" <<EOF
-instance-id: smartnic-test-$RANDOM
+instance-id: smartnic-$NAME-$RANDOM
 local-hostname: smartnic-vm
 EOF
 
-cat > "$NC" <<EOF
+    # assegnamento IP statici evita che il boot resti bloccato in attesa di un DHCP
+    cat > "$NC" <<EOF
 version: 2
 ethernets:
   ens3:
@@ -270,17 +319,27 @@ ethernets:
       - 10.0.0.2/24
 EOF
 
+    # blocchi presenti solo se c'è un filtro da caricare
+    local write_files_block=""
+    local xdp_attach_cmd=""
+    if [[ -n "$OBJ" ]]; then
+        local obj_b64
+        obj_b64="$(base64 -w0 "$OBJ")"
+        write_files_block="write_files:
+  - path: /root/filter.o
+    encoding: b64
+    content: ${obj_b64}
+    permissions: '0644'"
+        xdp_attach_cmd="  - ip link set ens3 xdp obj /root/filter.o sec xdp"
+    fi
+
     cat > "$UD" <<EOF
 #cloud-config
 password: smartnic
 chpasswd:
   expire: false
 ssh_pwauth: true
-write_files:
-  - path: /root/${OBJ}
-    encoding: b64
-    content: ${ebpf_b64}
-    permissions: '0644'
+${write_files_block}
 runcmd:
   - ip link set ens3 up
   - ip link set ens4 up
@@ -288,7 +347,7 @@ runcmd:
   - ip link set brVM up
   - ip link set ens3 master brVM
   - ip link set ens4 master brVM
-  - ip link set ens3 xdp obj /root/${OBJ} sec xdp
+${xdp_attach_cmd}
 EOF
 }
 
@@ -298,22 +357,11 @@ build_seed_iso() {
 }
 
 prepare_image() {
-    require_file "$BASE_IMG"
-    log "creazione overlay immagine VM"
+    log "creazione overlay dell'immagine base"
     qemu-img create -F qcow2 -b "$BASE_IMG" -f qcow2 "$IMG" &>/dev/null
 }
 
 start_vm() {
-    require_file "$IMG"
-    require_file "$SEED"
-
-    # controllo se esiste già VM in esecuzione con kill -0
-    if [[ -f "$QEMU_PID_FILE" ]] && kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
-        log "una VM risulta già in esecuzione (pid $(cat "$QEMU_PID_FILE")); usa 'down' prima di riusare 'up'"
-        exit 1
-    fi
-
-    # file descriptor 1 (stdout) e 2 (stderr) entrambi redirezionati in QEMU_LOG
     log "avvio QEMU in background (log: $QEMU_LOG)"
     qemu-system-x86_64 \
         -enable-kvm -m 1024 -smp 2 \
@@ -324,15 +372,17 @@ start_vm() {
         -netdev tap,id=n1,ifname=tap1,script=no,downscript=no \
         -device virtio-net-pci,netdev=n1,mac="$MAC1" \
         -nographic \
-        > "$QEMU_LOG" 2>&1 &
+        > "$QEMU_LOG" 2>&1 & # file descriptor 1 (stdout) e 2 (stderr) entrambi redirezionati in QEMU_LOG
     echo $! > "$QEMU_PID_FILE"
 
     # polling della VM: attendo termine cloud-init leggendo QEMU_LOG
     log "attesa completamento boot e cloud-init (30s circa)..."
-    local timeout=40
     local elapsed=0
-    
     while [[ $elapsed -lt $timeout ]]; do
+        # QEMU terminato prematuramente
+        if ! kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
+            die "QEMU è terminato, controlla $QEMU_LOG"
+        fi
         if grep -qi "Cloud-init.*finished" "$QEMU_LOG" 2>/dev/null; then
             log "VM pronta (completato in ${elapsed}s)"
             return 0
@@ -341,8 +391,7 @@ start_vm() {
         elapsed=$((elapsed + 1))
     done
     
-    log "errore: timeout attesa VM dopo ${timeout}s. Controlla $QEMU_LOG"
-    exit 1
+    die "timeout attesa VM dopo ${BOOT_TIMEOUT}s, controlla $QEMU_LOG"
 }
 
 stop_vm() {
@@ -361,72 +410,20 @@ stop_vm() {
     fi
 }
 
-# ----------------------------- ESECUZIONE -----------------------------
-
-run_test() {
-    mkdir -p "$PCAP_DIR"
-    local filter="(icmp or udp) and (host 192.168.100.1 or host 192.168.100.2)"
-
-    # tcpdump su tap0 e tap1 con filtro su tipo di pacchetto e host
-    # output salvato in apposita directory
-    log "avvio cattura su tap0 e tap1 per ${PCAP_SECONDS}s"
-    timeout "${PCAP_SECONDS}" sudo tcpdump -i tap0 -n "$filter" -w "$PCAP_DIR"/tap0.pcap &
-    local pid_tap0=$!
-    timeout "${PCAP_SECONDS}" sudo tcpdump -i tap1 -n "$filter" -w "$PCAP_DIR"/tap1.pcap &
-    local pid_tap1=$!
-    sleep 1 # evita race condition di tcpdump con ping
-
-    log "ping ICMP ns0 -> ns1"
-    sudo ip netns exec ns0 ping -c 5 -I veth0 192.168.100.2 || true
-
-    log "traffico UDP ns0 -> ns1 (deve essere scartato dal filtro)"
-    ( sudo ip netns exec ns1 timeout 3 nc -u -l 9999 & ) # in una subshell avvio in background il listener
-    sleep 0.5 # evita race condition del listener con sender
-    echo "test" | sudo ip netns exec ns0 nc -u -w1 -s 192.168.100.1 192.168.100.2 9999 || true
-
-    wait "$pid_tap0" "$pid_tap1" 2>/dev/null || true # attende termine dei due tcpdump
-
-    # output del test: numero di righe dei file pcap con icmp e udp (wc -l conta le righe)
-    local icmp_tap0 icmp_tap1 udp_tap0 udp_tap1
-    icmp_tap0=$(sudo tcpdump -r "$PCAP_DIR/tap0.pcap" -n icmp 2>/dev/null | wc -l)
-    icmp_tap1=$(sudo tcpdump -r "$PCAP_DIR/tap1.pcap" -n icmp 2>/dev/null | wc -l)
-    udp_tap0=$(sudo tcpdump -r "$PCAP_DIR/tap0.pcap" -n udp 2>/dev/null | wc -l)
-    udp_tap1=$(sudo tcpdump -r "$PCAP_DIR/tap1.pcap" -n udp 2>/dev/null | wc -l)
-    log "risultati: ICMP tap0=$icmp_tap0 tap1=$icmp_tap1 | UDP tap0=$udp_tap0 tap1=$udp_tap1"
-
-    # controllo risultato in base al numero di pacchetti registrati sulle tap
-    local ok=1
-    if [[ "$icmp_tap0" -lt 10 || "$icmp_tap1" -lt 10 ]]; then
-        log "FAIL: ICMP non ha attraversato la VM come atteso"
-        ok=0
-    fi
-    if [[ "$udp_tap0" -lt 1 || "$udp_tap1" -ne 0 ]]; then
-        log "FAIL: UDP non è stato droppato come atteso"
-        ok=0
-    fi
-
-    if [[ "$ok" -eq 1 ]]; then
-        log "PASS: ICMP attraversa la VM, UDP viene droppato dal filtro XDP"
-    else
-        log "vedi $PCAP_DIR/tap0.pcap e $PCAP_DIR/tap1.pcap per il dettaglio"
-        exit 1
-    fi
-}
-
 # ------------------------------ PULIZIA ------------------------------
 
 teardown() {
     log "rimozione infrastruttura host"
-    link_exists tap0 && sudo ip link del tap0 || true
-    link_exists tap1 && sudo ip link del tap1 || true
-    link_exists br0 && sudo ip link del br0 || true
-    link_exists br1 && sudo ip link del br1 || true
-    link_exists veth0-br && sudo ip link del veth0-br || true
-    link_exists veth1-br && sudo ip link del veth1-br || true
-    netns_exists ns0 && sudo ip netns del ns0 || true
-    netns_exists ns1 && sudo ip netns del ns1 || true
+    link_exists tap0 && ip link del tap0 || true
+    link_exists tap1 && ip link del tap1 || true
+    link_exists br0 && ip link del br0 || true
+    link_exists br1 && ip link del br1 || true
+    link_exists veth0-br && ip link del veth0-br || true
+    link_exists veth1-br && ip link del veth1-br || true
+    netns_exists ns0 && ip netns del ns0 || true
+    netns_exists ns1 && ip netns del ns1 || true
     rm -f  "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ"
-    sudo rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
+    rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
 }
 
 # ------------------------------ COMANDI ------------------------------
