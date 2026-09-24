@@ -14,72 +14,80 @@
 # stop su errori (-e), variabili non definite (-u) o errori nelle pipe (-o pipefail)
 set -euo pipefail
 
-# ------------------------------ UTILITY ------------------------------
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(dirname "$0")"
 
+# ----------------------------- COSTANTI -----------------------------
+
+# cartella dei file generati/scaricati (gitignored)
+# realpath -m rende il percorso assoluto, anche se la cartella non esiste ancora
+TESTBED_DIR="$(realpath -m "$SCRIPT_DIR/../testbed")"
+
+# immagine base Debian
 BASE_IMG="debian-12-generic-amd64.qcow2"
+BASE_IMG_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+
+# file temporanei, creati da 'up' e rimossi da 'down'
 IMG="debian-overlay.qcow2"
 SEED="seed.iso"
 MD="meta-data"
 NC="network-config"
 UD="user-data"
+OBJ_OUT="$TESTBED_DIR/obj.o"
+P4_C_OUT="$TESTBED_DIR/code-p4.c"
 
+# indirizzi MAC delle interfaccie della VM
 MAC0="52:54:00:12:34:56"
 MAC1="52:54:00:12:34:57"
 
+# timeout (s) per l'attesa del boot della VM
+BOOT_TIMEOUT=60
+
+# ------------------------------ UTILITY ------------------------------
+
 log() {
-    echo "[vm-test] $*"
+    echo "[vnic] $*"
+}
+
+die() {
+    echo "[vnic] errore: $*" >&2
+    exit 1
+}
+
+require_root() {
+    # id -u stampa uid
+    if [[ "$(id -u)" -ne 0 ]]; then
+        die "'$1' richiede privilegi di root, usa sudo"
+    fi
 }
 
 require_file() {
     if [[ ! -f "$1" ]]; then
-        echo "errore: '$1' non trovato"
-        exit 1
+        die "file '$1' non trovato"
     fi
 }
 
-# output del comando scartato, ci interessa solo exit status
+require_cmd() {
+    # command -v <comando> stampa path del comando, vuoto se questo non esiste
+    if ! command -v "$1" &>/dev/null; then
+        die "comando '$1' non trovato, installalo prima di continuare"
+    fi
+}
+
 link_exists() {
+# output del comando scartato, ci interessa solo exit status
     ip link show dev "$1" &>/dev/null
 }
 
-# con flag -q grep ritorna 1 se trova la stringa, 0 altrimenti
 netns_exists() {
+# con flag -q grep ritorna 1 se trova la stringa, 0 altrimenti
     ip netns list | grep -qw "$1"
 }
 
-# --------------------------- INFRASTRUTTURA ---------------------------
-
-setup_namespace() {
-    log "creazione namespace ns$1"
-    netns_exists ns"$1" || sudo ip netns add ns"$1"
-}
-
-setup_veth() {
-    log "creazione veth$1, posizionamento e assegnamento IP"
-    if ! link_exists veth"$1"-br; then
-        sudo ip link add veth"$1" type veth peer name veth"$1"-br
-        sudo ip link set veth"$1" netns ns"$1"
-        sudo ip netns exec ns"$1" ip addr add 192.168.100."$(( $1 + 1 ))"/24 dev veth"$1"
-        sudo ip netns exec ns"$1" ip link set veth"$1" up
-        sudo ip netns exec ns"$1" ip link set lo up
-    fi
-}
-
-setup_tap() {
-    log "creazione tap$1"
-    link_exists tap"$1" || sudo ip tuntap add dev tap"$1" mode tap user "$(whoami)"
-    sudo ip link set tap"$1" up
-}
-
-setup_host_bridge() {
-    log "creazione br$1"
-    if ! link_exists br"$1"; then
-        sudo ip link add br"$1" type bridge
-        sudo ip link set br"$1" up
-        sudo ip link set tap"$1" master br"$1"
-        sudo ip link set veth"$1"-br master br"$1"
-        sudo ip link set veth"$1"-br up
-    fi
+# set file pid/log specifici per ogni istanza
+set_instance_files() {
+    QEMU_PID_FILE="$TESTBED_DIR/vnic-$1.pid"
+    QEMU_LOG="$TESTBED_DIR/vnic-$1.log"
 }
 
 # ------------------------------- HELP -------------------------------
@@ -116,6 +124,41 @@ Esempi:
 
 Vedi examples/ per filtri di prova pronti all'uso, ciascuno con un proprio README e script verify.sh per simulare traffico.
 EOF
+}
+
+# --------------------------- INFRASTRUTTURA ---------------------------
+
+setup_namespace() {
+    log "creazione namespace ns$1"
+    netns_exists ns"$1" || sudo ip netns add ns"$1"
+}
+
+setup_veth() {
+    log "creazione veth$1, posizionamento e assegnamento IP"
+    if ! link_exists veth"$1"-br; then
+        sudo ip link add veth"$1" type veth peer name veth"$1"-br
+        sudo ip link set veth"$1" netns ns"$1"
+        sudo ip netns exec ns"$1" ip addr add 192.168.100."$(( $1 + 1 ))"/24 dev veth"$1"
+        sudo ip netns exec ns"$1" ip link set veth"$1" up
+        sudo ip netns exec ns"$1" ip link set lo up
+    fi
+}
+
+setup_tap() {
+    log "creazione tap$1"
+    link_exists tap"$1" || sudo ip tuntap add dev tap"$1" mode tap user "$(whoami)"
+    sudo ip link set tap"$1" up
+}
+
+setup_host_bridge() {
+    log "creazione br$1"
+    if ! link_exists br"$1"; then
+        sudo ip link add br"$1" type bridge
+        sudo ip link set br"$1" up
+        sudo ip link set tap"$1" master br"$1"
+        sudo ip link set veth"$1"-br master br"$1"
+        sudo ip link set veth"$1"-br up
+    fi
 }
 
 # ---------------------------- FILTRO EBPF ----------------------------
@@ -310,7 +353,32 @@ teardown() {
     sudo rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
 }
 
-status() {
+# ------------------------------ COMANDI ------------------------------
+
+cmd_up() {
+    require_root "up"
+    mkdir -p "$TESTBED_DIR"
+    
+    for i in {0,1}; do
+        setup_namespace $i
+        setup_veth $i
+        setup_tap $i
+        setup_host_bridge $i
+    done
+
+    generate_cloud_init
+    build_seed_iso
+    prepare_image
+    start_vm
+}
+
+cmd_down() {
+    require_root "down"
+    stop_vm
+    teardown
+}
+
+cmd_status() {
     if [[ -f "$QEMU_PID_FILE" ]] && kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
         log "VM in esecuzione, pid: $(cat "$QEMU_PID_FILE")"
     else
@@ -335,40 +403,29 @@ status() {
 }
 
 # ---------------------------- ENTRY POINT ----------------------------
-case "${1:-}" in
+
+case "${1:-}" in # se $1 assente il caso default è help
     help|-h|--help)
         usage
         ;;
 
     up)
-        compile_ebpf
-        setup_namespace 0
-        setup_namespace 1
-        setup_veth 0
-        setup_veth 1
-        setup_tap 0
-        setup_tap 1
-        setup_host_bridge 0
-        setup_host_bridge 1
-        generate_cloud_init
-        build_seed_iso
-        prepare_image
-        start_vm
-        log "infrastruttura e VM pronte" 
+        shift # scarta 'up' dagli args
+        cmd_up "$@"
         ;;
 
     down)
-        stop_vm
-        teardown
-        log "pulizia completata"
+        shift # scarta 'down' dagli args
+        cmd_down "$@"
         ;;
     
     status)
-        status
+        cmd_status
         ;;
     
     *)
-        echo "Uso: $0 {up|run|status|down}"
+        echo "errore: comando sconosciuto '$1'" >&2
+        usage
         exit 1
         ;;
 esac
