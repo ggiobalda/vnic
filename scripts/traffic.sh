@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # traffic.sh — generazione di traffico di prova per vnic
 #
-# Invia pacchetti da un namespace (ns0 o ns1) verso l'altro, attraverso la VM
+# Invia pacchetti da ns0 verso ns1, attraverso la VM
 # creata da 'vnic.sh up'.
 #
 # Lo script non verifica il risultato: nping stampa i pacchetti inviati (SENT)

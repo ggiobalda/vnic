@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # vnic.sh — emulazione di una SmartNIC tramite VM QEMU
 #
-# Crea due namespace (ns0, ns1) collegati attraverso una VM Debian:
-#
-#   ns0 (veth0) -- veth0-br -- br0 -- tap0 == [VM: ens3 -> brVM -> ens4] == tap1 -- br1 -- veth1-br -- (veth1) ns1
-#
-# e, opzionalmente, carica un programma eBPF P4 come XDP sull'interfaccia di ingresso della VM (ens3).
+# Crea due namespace (ns0, ns1) collegati attraverso una VM Debian e,
+# opzionalmente, carica un programma eBPF o P4 come XDP sull'interfaccia di ingresso della VM (ens3).
 #
 # vnic si occupa SOLO dell'infrastruttura e del caricamento del programma.
 # La generazione del traffico e la verifica del comportamento del programma
@@ -36,7 +33,7 @@ UD="$TESTBED_DIR/user-data"
 OBJ_OUT="$TESTBED_DIR/obj.o"
 P4_C_OUT="$TESTBED_DIR/code-p4.c"
 
-# indirizzi MAC delle interfaccie della VM
+# indirizzi MAC delle interfacce della VM
 MAC0="52:54:00:12:34:56"
 MAC1="52:54:00:12:34:57"
 
@@ -113,11 +110,11 @@ Note:
     Senza --attach-ebpf né --attach-p4 la VM inoltra tutti i frame senza filtrarli.
 
 Topologia creata:
-    ns0 (192.168.100.1) -- tap0 -- [VM + filtro] -- tap1 -- ns1 (192.168.100.2)
+    ns0 (192.168.100.1) -- tap0 -- [VM + programma] -- tap1 -- ns1 (192.168.100.2)
 
 Esempi:
     sudo $SCRIPT_NAME up demo --attach-ebpf examples/drop-udp/drop_udp.c
-    sudo $SCRIPT_NAME up demo --attach-p4 examples/tcp-port-filter/filter.p4
+    sudo $SCRIPT_NAME up demo --attach-p4 examples/tcp-port-filter/tcp_port_filter.p4
     sudo $SCRIPT_NAME status
     sudo ip netns exec ns0 ping -c 3 192.168.100.2
     sudo $SCRIPT_NAME down demo
@@ -216,7 +213,7 @@ resolve_obj() {
                 ;;
 
             *.c)
-                log "compilazione $ATTACH_EBPF -> $OBJ_OUT"
+                log "compilazione $ATTACH_EBPF (clang, target bpf)"
                 clang -O2 -target bpf -c "$ATTACH_EBPF" -o "$OBJ_OUT"
                 OBJ="$OBJ_OUT"
                 ;;
@@ -243,12 +240,10 @@ compile_p4() {
 # --------------------------- INFRASTRUTTURA ---------------------------
 
 setup_namespace() {
-    log "creazione namespace ns$1"
     netns_exists ns"$1" || ip netns add ns"$1"
 }
 
 setup_veth() {
-    log "creazione veth$1, posizionamento in ns$1 e assegnamento IP"
     if ! link_exists veth"$1"-br; then
         ip link add veth"$1" type veth peer name veth"$1"-br
         ip link set veth"$1" netns ns"$1"
@@ -259,13 +254,11 @@ setup_veth() {
 }
 
 setup_tap() {
-    log "creazione tap$1"
     link_exists tap"$1" || ip tuntap add dev tap"$1" mode tap
     ip link set tap"$1" up
 }
 
 setup_host_bridge() {
-    log "creazione br$1"
     if ! link_exists br"$1"; then
         ip link add br"$1" type bridge
         ip link set br"$1" up
@@ -298,8 +291,6 @@ ensure_base_image() {
 }
 
 generate_cloud_init() {
-    log "generazione file cloud-init in $TESTBED_DIR"
-
     cat > "$MD" <<EOF
 instance-id: smartnic-$NAME-$RANDOM
 local-hostname: smartnic-vm
@@ -350,17 +341,14 @@ EOF
 }
 
 build_seed_iso() {
-    log "generazione $SEED"
     xorriso -as genisoimage -output "$SEED" -volid cidata -joliet -rock "$MD" "$NC" "$UD" &>/dev/null
 }
 
 prepare_image() {
-    log "creazione overlay dell'immagine base"
     qemu-img create -F qcow2 -b "$BASE_IMG" -f qcow2 "$IMG" &>/dev/null
 }
 
 start_vm() {
-    log "avvio QEMU in background (log: $QEMU_LOG)"
     qemu-system-x86_64 \
         -enable-kvm -m 1024 -smp 2 \
         -drive file="$IMG",if=virtio \
@@ -374,7 +362,7 @@ start_vm() {
     echo $! > "$QEMU_PID_FILE"
 
     # polling della VM: attendo termine cloud-init leggendo QEMU_LOG
-    log "attesa completamento boot e cloud-init (30s circa)..."
+    log "avvio VM, attesa boot e cloud-init (30s circa)..."
     local elapsed=0
     while [[ $elapsed -lt $BOOT_TIMEOUT ]]; do
         # QEMU terminato prematuramente
@@ -415,7 +403,7 @@ stop_vm() {
 # ------------------------------ PULIZIA ------------------------------
 
 teardown() {
-    log "rimozione infrastruttura host"
+    log "rimozione infrastruttura host e file temporanei"
 
     for iface in tap0 tap1 br0 br1 veth0-br veth1-br; do
         if link_exists "$iface"; then
@@ -429,7 +417,6 @@ teardown() {
         fi
     done
 
-    log "rimozione file temporanei da $TESTBED_DIR"
     rm -f "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ_OUT" "$P4_C_OUT" "$QEMU_LOG"
 }
 
@@ -448,20 +435,26 @@ cmd_up() {
     resolve_obj
     
     for i in {0,1}; do
+        log "infrastruttura lato $i: ns$i (192.168.100.$((i + 1))), veth$i, br$i, tap$i"
         setup_namespace $i
         setup_veth $i
         setup_tap $i
         setup_host_bridge $i
     done
 
+    log "preparazione VM: cloud-init, seed.iso, overlay dell'immagine base"
     generate_cloud_init
     build_seed_iso
     prepare_image
     start_vm
 
-    log "istanza '$NAME' pronta (filtro: ${ATTACH_EBPF:-${ATTACH_P4:-nessuno}})"
-    log "ns0 = 192.168.100.1, ns1 = 192.168.100.2"
-    log "prova: sudo ip netns exec ns0 ping -c 3 192.168.100.2"
+    log "istanza '$NAME' pronta"
+    log "  programma: ${ATTACH_EBPF:-${ATTACH_P4:-nessuno, la VM inoltra tutti i frame}}"
+    log "  ns0:       192.168.100.1 (trasmette)"
+    log "  ns1:       192.168.100.2 (riceve)"
+    log "  log VM:    $QEMU_LOG"
+    log "  prova:     sudo ip netns exec ns0 ping -c 3 192.168.100.2"
+    log "  stop:      sudo $0 down $NAME"
 }
 
 cmd_down() {
@@ -473,6 +466,7 @@ cmd_down() {
 
     stop_vm
     teardown
+    log "istanza '$NAME' rimossa"
 }
 
 cmd_status() {
@@ -495,21 +489,15 @@ cmd_status() {
         log "nessuna VM in esecuzione"
     fi
 
+    local ns_list="" iface_list=""
     for i in ns0 ns1; do
-        if netns_exists "$i"; then
-            log "namespace $i presente"
-        else
-            log "namespace $i assente"
-        fi
+        if netns_exists "$i"; then ns_list+=" $i"; fi
     done
-
     for i in veth0-br br0 tap0 tap1 br1 veth1-br; do
-        if link_exists "$i"; then
-            log "interfaccia $i presente"
-        else
-            log "interfaccia $i assente"
-        fi
+        if link_exists "$i"; then iface_list+=" $i"; fi
     done
+    log "  namespace presenti: ${ns_list:- nessuno}"
+    log "  interfacce presenti:${iface_list:- nessuna}"
 }
 
 # ---------------------------- ENTRY POINT ----------------------------
