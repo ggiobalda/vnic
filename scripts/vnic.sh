@@ -24,15 +24,15 @@ SCRIPT_DIR="$(dirname "$0")"
 TESTBED_DIR="$(realpath -m "$SCRIPT_DIR/../testbed")"
 
 # immagine base Debian
-BASE_IMG="debian-12-generic-amd64.qcow2"
+BASE_IMG="$TESTBED_DIR/debian-12-generic-amd64.qcow2"
 BASE_IMG_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 
 # file temporanei, creati da 'up' e rimossi da 'down'
-IMG="debian-overlay.qcow2"
-SEED="seed.iso"
-MD="meta-data"
-NC="network-config"
-UD="user-data"
+IMG="$TESTBED_DIR/debian-overlay.qcow2"
+SEED="$TESTBED_DIR/seed.iso"
+MD="$TESTBED_DIR/meta-data"
+NC="$TESTBED_DIR/network-config"
+UD="$TESTBED_DIR/user-data"
 OBJ_OUT="$TESTBED_DIR/obj.o"
 P4_C_OUT="$TESTBED_DIR/code-p4.c"
 
@@ -378,7 +378,7 @@ start_vm() {
     # polling della VM: attendo termine cloud-init leggendo QEMU_LOG
     log "attesa completamento boot e cloud-init (30s circa)..."
     local elapsed=0
-    while [[ $elapsed -lt $timeout ]]; do
+    while [[ $elapsed -lt $BOOT_TIMEOUT ]]; do
         # QEMU terminato prematuramente
         if ! kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
             die "QEMU è terminato, controlla $QEMU_LOG"
@@ -402,7 +402,11 @@ stop_vm() {
         if kill -0 "$pid" 2>/dev/null; then
             log "arresto QEMU (pid: $pid)"
             kill "$pid"
-            wait "$pid" 2>/dev/null || true
+            
+            # finché processo QEMU esiste rimane nel loop 
+            while kill -0 "$pid" 2>/dev/null; do
+                sleep 0.5;
+            done
         fi
         rm -f "$QEMU_PID_FILE"
     else
@@ -414,16 +418,21 @@ stop_vm() {
 
 teardown() {
     log "rimozione infrastruttura host"
-    link_exists tap0 && ip link del tap0 || true
-    link_exists tap1 && ip link del tap1 || true
-    link_exists br0 && ip link del br0 || true
-    link_exists br1 && ip link del br1 || true
-    link_exists veth0-br && ip link del veth0-br || true
-    link_exists veth1-br && ip link del veth1-br || true
-    netns_exists ns0 && ip netns del ns0 || true
-    netns_exists ns1 && ip netns del ns1 || true
-    rm -f  "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ"
-    rm -f "$PCAP_DIR"/tap0.pcap "$PCAP_DIR"/tap1.pcap
+
+    for iface in tap0 tap1 br0 br1 veth0-br veth1-br; do
+        if link_exists "$iface"; then
+            ip link del "$iface"
+        fi
+    done
+
+    for ns in ns0 ns1; do
+        if netns_exists "$ns"; then
+            ip netns del "$ns"
+        fi
+    done
+
+    log "rimozione file temporanei da $TESTBED_DIR"
+    rm -f "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ_OUT" "$P4_C_OUT" "$QEMU_LOG"
 }
 
 # ------------------------------ COMANDI ------------------------------
@@ -436,6 +445,9 @@ cmd_up() {
 
     check_dependencies
     check_not_running
+
+    ensure_base_image
+    resolve_obj
     
     for i in {0,1}; do
         setup_namespace $i
@@ -455,16 +467,34 @@ cmd_up() {
 }
 
 cmd_down() {
+    if [[ $# -lt 1 ]]; then die "'down' richiede un nome"; fi
+    
+    NAME="$1"
     require_root "down"
+    set_instance_files "$NAME"
+
     stop_vm
     teardown
 }
 
 cmd_status() {
-    if [[ -f "$QEMU_PID_FILE" ]] && kill -0 "$(cat "$QEMU_PID_FILE")" 2>/dev/null; then
-        log "VM in esecuzione, pid: $(cat "$QEMU_PID_FILE")"
-    else
-        log "Nessuna VM in esecuzione"
+    local found=0
+    for pid_file in "$TESTBED_DIR"/vnic-*.pid; do
+        if [[ -f "$pid_file" ]]; then
+            found=1 
+            local name pid
+            name="$(basename "$pid_file" .pid)"
+            name="${name#vnic-}"
+            pid="$(cat "$pid_file")"
+            if kill -0 "$pid" 2>/dev/null; then
+                log "istanza '$name': VM in esecuzione (pid $pid)"
+            else
+                log "istanza '$name': VM non in esecuzione (pid file obsoleto)"
+            fi
+        fi
+    done
+    if [[ $found -eq 0 ]]; then
+        log "nessuna VM in esecuzione"
     fi
 
     for i in ns0 ns1; do
@@ -486,7 +516,7 @@ cmd_status() {
 
 # ---------------------------- ENTRY POINT ----------------------------
 
-case "${1:-}" in # se $1 assente il caso default è help
+case "${1:-help}" in # se $1 assente il caso default è help
     help|-h|--help)
         usage
         ;;
