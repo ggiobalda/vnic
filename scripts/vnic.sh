@@ -469,7 +469,7 @@ cmd_up() {
     log "  ns1:       192.168.100.2 (riceve)"
     log "  log VM:    $QEMU_LOG"
     log "  prova:     sudo ip netns exec ns0 ping -c 3 192.168.100.2"
-    log "  stop:      sudo $0 down $NAME"
+    log "  stop:      sudo $(realpath --relative-to=. "$0") down $NAME"
 }
 
 cmd_down() {

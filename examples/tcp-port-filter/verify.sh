@@ -8,7 +8,7 @@ VNIC="$EXAMPLE_DIR/../../scripts/vnic.sh"
 TRAFFIC="$EXAMPLE_DIR/../../scripts/traffic.sh"
 NAME="tcp-port-filter"
 
-# deve coincidere con BLOCKED_PORT in tcp_port_filter.c
+# deve coincidere con BLOCKED_PORT in tcp_port_filter.c e tcp_port_filter.p4
 BLOCKED_PORT=8080
 ALLOWED_PORT=9090
 
