@@ -33,6 +33,9 @@ UD="$TESTBED_DIR/user-data"
 OBJ_OUT="$TESTBED_DIR/obj.o"
 P4_C_OUT="$TESTBED_DIR/code-p4.c"
 
+# header di p4c necessari per compilare il C generato da p4c-ebpf (vedi README.md nella cartella)
+P4C_RUNTIME="$SCRIPT_DIR/p4c-runtime"
+
 # indirizzi MAC delle interfacce della VM
 MAC0="52:54:00:12:34:56"
 MAC1="52:54:00:12:34:57"
@@ -107,6 +110,7 @@ Opzioni per 'up':
 Note:
     L'immagine Debian cloud deve trovarsi in testbed/debian-12-generic-amd64.qcow2; se manca, 'up' propone di scaricarla.
     Le opzioni --attach-ebpf e --attach-p4 sono mutuamente esclusive.
+    --attach-p4 richiede p4c-ebpf, da installare a parte (vedi README, sezione Requisiti).
     Senza --attach-ebpf né --attach-p4 la VM inoltra tutti i frame senza filtrarli.
 
 Topologia creata:
@@ -181,8 +185,10 @@ check_dependencies() {
     require_cmd qemu-system-x86_64
     require_cmd qemu-img
     require_cmd xorriso
-    if [[ "$ATTACH_EBPF" == *.c ]]; then require_cmd clang; fi
-    if [[ -n "$ATTACH_P4" ]]; then require_cmd p4c-ebpf; fi
+    if [[ "$ATTACH_EBPF" == *.c || -n "$ATTACH_P4" ]]; then require_cmd clang; fi
+    if [[ -n "$ATTACH_P4" ]] && ! command -v p4c-ebpf &>/dev/null; then
+        die "comando 'p4c-ebpf' non trovato, va installato a parte (vedi README, sezione Requisiti)"
+    fi
     return 0
 }
 
@@ -201,8 +207,10 @@ check_not_running() {
 
 # produce in OBJ il file oggetto eBPF da caricare nella VM
 # (vuoto se l'utente non ha inserito un programma P4 o EBPF)
+# e in OBJ_SEC la sezione ELF che contiene il programma
 resolve_obj() {
     OBJ=""
+    OBJ_SEC="xdp"
 
     if [[ -n "$ATTACH_EBPF" ]]; then
         require_file "$ATTACH_EBPF"
@@ -233,8 +241,15 @@ resolve_obj() {
     fi
 }
 
+# traduce il P4 in C con p4c-ebpf (--xdp: codice per l'hook XDP invece che TC)
+# e lo compila con clang usando gli header di p4c in P4C_RUNTIME
 compile_p4() {
-    die "[DEV] Implementare compilazione P4 -> eBPF" 
+    log "traduzione $ATTACH_P4 in C (p4c-ebpf) e compilazione (clang, target bpf)"
+    p4c-ebpf --xdp -o "$P4_C_OUT" "$ATTACH_P4"
+    clang -O2 -target bpf -I "$P4C_RUNTIME" -c "$P4_C_OUT" -o "$OBJ_OUT"
+    OBJ="$OBJ_OUT"
+    # p4c-ebpf mette il programma nella sezione "tc" anche con --xdp
+    OBJ_SEC="tc"
 }
 
 # --------------------------- INFRASTRUTTURA ---------------------------
@@ -319,7 +334,7 @@ EOF
     encoding: b64
     content: ${obj_b64}
     permissions: '0644'"
-        xdp_attach_cmd="  - ip link set ens3 xdp obj /root/filter.o sec xdp"
+        xdp_attach_cmd="  - ip link set ens3 xdp obj /root/filter.o sec ${OBJ_SEC}"
     fi
 
     cat > "$UD" <<EOF
