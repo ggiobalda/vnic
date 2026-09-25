@@ -5,11 +5,12 @@ set -euo pipefail
 
 EXAMPLE_DIR="$(dirname "$0")"
 VNIC="$EXAMPLE_DIR/../../scripts/vnic.sh"
+TRAFFIC="$EXAMPLE_DIR/../../scripts/traffic.sh"
 NAME="drop-udp"
 
 # pacchetti catturati
 PCAP_DIR="/tmp/vnic-verify-$NAME"
-CAPTURE_SECONDS=8
+CAPTURE_SECONDS=12
 
 log() {
     echo "[verify] $*"
@@ -62,15 +63,11 @@ timeout "$CAPTURE_SECONDS" tcpdump -i tap1 -n -Z root -w "$PCAP_DIR/tap1.pcap" "
 PID_TAP1=$!
 sleep 1 # evita race condition fra tcpdump e traffico
 
-log "ICMP: ping ns0 -> ns1 (deve passare)"
-if ip netns exec ns0 ping -c 5 192.168.100.2 >/dev/null; then
-    PING_OK=1
-else
-    PING_OK=0
-fi
+log "ICMP: 5 echo request ns0 -> ns1 (devono passare)"
+"$TRAFFIC" icmp --count 5 >/dev/null
 
-log "UDP: invio ns0 -> ns1:9999 (deve essere scartato)"
-echo "test" | ip netns exec ns0 nc -u -w1 192.168.100.2 9999 || true
+log "UDP: 1 pacchetto ns0 -> ns1:9999 (deve essere scartato)"
+"$TRAFFIC" udp --dst-port 9999 --count 1 >/dev/null
 wait "$PID_TAP0" "$PID_TAP1" || true
 
 # ------------------------------ RISULTATO ------------------------------
@@ -84,7 +81,7 @@ log "ICMP: tap0=$ICMP_TAP0 tap1=$ICMP_TAP1 | UDP: tap0=$UDP_TAP0 tap1=$UDP_TAP1"
 OK=1
 # controllo risultato in base al numero di pacchetti registrati sulle tap
 # 5 richieste + 5 risposte devono passare da entrambe le tap
-if [[ $PING_OK -eq 0 || $ICMP_TAP0 -lt 10 || $ICMP_TAP1 -lt 10 ]]; then
+if [[ $ICMP_TAP0 -lt 10 || $ICMP_TAP1 -lt 10 ]]; then
     log "FAIL: ICMP non ha attraversato la VM"
     OK=0
 fi

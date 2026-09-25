@@ -136,7 +136,7 @@ parse_up_args() {
 
     # caso senza argomenti o con opzione come primo arg
     if [[ $# -eq 0 || "$1" == -* ]]; then
-        echo "errore: 'up' richiede un nome" >&2
+        log "errore: 'up' richiede un nome" >&2
         usage
         exit 1
     fi
@@ -149,8 +149,7 @@ parse_up_args() {
         case "$1" in
             --attach-ebpf)
                 if [[ -n "$ATTACH_P4" ]]; then
-                    echo "errore: --attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
-                    exit 1
+                    die "--attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
                 else
                     ATTACH_EBPF="$2"
                     shift 2 
@@ -159,8 +158,7 @@ parse_up_args() {
 
             --attach-p4)
                 if [[ -n "$ATTACH_EBPF" ]]; then
-                    echo "errore: --attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
-                    exit 1
+                    die "--attach-ebpf e --attach-p4 sono mutuamente esclusivi" >&2
                 else
                     ATTACH_P4="$2"
                     shift 2
@@ -173,7 +171,7 @@ parse_up_args() {
                 ;;
 
             *)
-                echo "errore: opzione sconosciuta '$1'" >&2
+                die "opzione sconosciuta '$1'" >&2
                 usage
                 exit 1 
                 ;;
@@ -196,7 +194,7 @@ check_not_running() {
     for pid_file in "$TESTBED_DIR"/vnic-*.pid; do
         if [[ -f "$pid_file" ]]; then
             if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-                die "un'istanza è già attiva (pid: $(cat "$pid_file")); usa 'down' prima di un nuovo 'up'"
+                die "un'istanza è già attiva ($(basename "$pid_file" .pid)); usa 'down' prima di un nuovo 'up'"
             fi
         fi
     done
@@ -536,7 +534,7 @@ case "${1:-help}" in # se $1 assente il caso default è help
         ;;
     
     *)
-        echo "errore: comando sconosciuto '$1'" >&2
+        log "errore: comando sconosciuto '$1'" >&2
         usage
         exit 1
         ;;
