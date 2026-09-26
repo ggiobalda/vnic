@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Script per automatizzare il test manuale descritto in VM-test.md
 # 
 # Lo scopo di questo script è poi essere tradotto comando per comando
@@ -11,7 +12,7 @@
 #   in cloud-config
 # - tcpdump solo su tap0 e tap1
 #
-# Differenze con main.rs saranno:
+# Differenze con vnic saranno:
 # - codice eBPF caricato dall'utente, mentre qui se ne usa uno di test
 # - aggiunta di compatibilità con codice P4, che vnic traducerà in eBPF
 # - rimozione dei bridge, il cui lavoro di inoltro viene fatto
