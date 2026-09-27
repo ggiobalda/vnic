@@ -16,6 +16,11 @@ if command -v podman &>/dev/null; then
     ENGINE=podman
 elif command -v docker &>/dev/null; then
     ENGINE=docker
+    # a differenza di podman, docker funziona solo se il demone dockerd è attivo
+    if ! docker info &>/dev/null; then
+        echo "[p4c-container] errore: demone docker non raggiungibile, avvialo con 'sudo systemctl start docker' (oppure installa podman)" >&2
+        exit 1
+    fi
 else
     echo "[p4c-container] errore: serve podman o docker" >&2
     exit 1

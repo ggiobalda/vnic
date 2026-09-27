@@ -48,7 +48,7 @@ Per `--attach-p4` serve il compilatore `p4c-ebpf`, che non si trova nei reposito
 1. `p4c-ebpf` installato sul sistema, ad esempio su Ubuntu con il pacchetto `p4lang-p4c` dal repository OBS di p4lang ([istruzioni](https://github.com/p4lang/p4c#installing-packaged-versions-of-p4c))
 2. altrimenti `scripts/p4c-container.sh`, che esegue il compilatore nell'immagine ufficiale `p4lang/p4c` con `podman` (o `docker`)
 
-Nel secondo caso basta avere podman o docker: l'immagine viene scaricata al primo `up` con `--attach-p4`. Dato che vnic gira come root l'immagine finisce tra quelle di root, per scaricarla in anticipo:
+Nel secondo caso basta avere podman o docker. Con docker il servizio deve essere attivo (`sudo systemctl start docker`), podman invece non ne ha bisogno. L'immagine viene scaricata al primo `up` con `--attach-p4`. Dato che vnic gira come root l'immagine finisce tra quelle di root, per scaricarla in anticipo:
 ```bash
 sudo podman pull docker.io/p4lang/p4c:latest
 ```

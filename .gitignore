@@ -1,1 +1,15 @@
 testbed/*
+
+# file generati dalla compilazione latex
+LaTeX/**/*.aux
+LaTeX/**/*.bbl
+LaTeX/**/*.blg
+LaTeX/**/*.fdb_latexmk
+LaTeX/**/*.fls
+LaTeX/**/*.lof
+LaTeX/**/*.lot
+LaTeX/**/*.lol
+LaTeX/**/*.log
+LaTeX/**/*.out
+LaTeX/**/*.toc
+LaTeX/**/*.synctex.gz
