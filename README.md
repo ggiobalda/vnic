@@ -24,6 +24,7 @@ vnic si occupa solo dell'infrastruttura e del caricamento del programma, la gene
 ## Struttura
 - `scripts/vnic.sh`: il tool vero e proprio, crea e rimuove infrastruttura e VM e carica il filtro
 - `scripts/traffic.sh`: genera traffico di prova da `ns0` verso `ns1` usando `nping`
+- `scripts/p4c-container.sh`: esegue `p4c-ebpf` nel container `p4lang/p4c`, usato da vnic se il compilatore non è installato
 - `scripts/p4c-runtime/`: header di p4c necessari per compilare il C generato da `p4c-ebpf` (il perché è spiegato nel README della cartella)
 - `scripts/vm-test.sh`: prima automatizzazione del test manuale, da cui è nato `vnic.sh`
 - `examples/`: filtri di prova, ognuno con il suo README e uno script `verify.sh`
@@ -43,21 +44,18 @@ I nomi dei pacchetti cambiano a seconda della distribuzione, comunque `vnic.sh` 
 Serve Linux con KVM abilitato e l'immagine `debian-12-generic-amd64.qcow2` (circa 400MB) deve trovarsi in `testbed/`. Se manca, al primo `up` lo script propone di scaricarla da cloud.debian.org (con `-y` non chiede conferma).
 
 ### P4
-Per `--attach-p4` serve anche `p4c-ebpf`, il compilatore da P4 a eBPF, che va installato a parte perché non si trova nei repository della maggior parte delle distribuzioni. Chi usa solo programmi in eBPF non ne ha bisogno. Ci sono due modi per averlo:
-+ su Ubuntu, il pacchetto `p4lang-p4c` dal repository OBS di p4lang ([istruzioni](https://github.com/p4lang/p4c#installing-packaged-versions-of-p4c))
-+ su qualsiasi distribuzione, con `podman` (o `docker`) e l'immagine ufficiale `p4lang/p4c`, creando uno script `/usr/local/bin/p4c-ebpf` che lancia il compilatore dentro il container
+Per `--attach-p4` serve il compilatore `p4c-ebpf`, che non si trova nei repository della maggior parte delle distribuzioni. Chi usa solo programmi in eBPF non ne ha bisogno. vnic lo cerca in quest'ordine:
+1. `p4c-ebpf` installato sul sistema, ad esempio su Ubuntu con il pacchetto `p4lang-p4c` dal repository OBS di p4lang ([istruzioni](https://github.com/p4lang/p4c#installing-packaged-versions-of-p4c))
+2. altrimenti `scripts/p4c-container.sh`, che esegue il compilatore nell'immagine ufficiale `p4lang/p4c` con `podman` (o `docker`)
+
+Nel secondo caso basta avere podman o docker: l'immagine viene scaricata al primo `up` con `--attach-p4`. Dato che vnic gira come root l'immagine finisce tra quelle di root, per scaricarla in anticipo:
 ```bash
 sudo podman pull docker.io/p4lang/p4c:latest
-sudo tee /usr/local/bin/p4c-ebpf <<'EOF'
-#!/bin/sh
-exec podman run --rm --security-opt label=disable \
-    -v /home:/home -v /tmp:/tmp -w "$PWD" \
-    docker.io/p4lang/p4c:latest p4c-ebpf "$@"
-EOF
-sudo chmod +x /usr/local/bin/p4c-ebpf
-sudo p4c-ebpf --version
 ```
-L'immagine va scaricata con `sudo` perché vnic gira come root, e podman tiene immagini separate per ogni utente. Le opzioni `-v` rendono visibili al container i file in `/home` e `/tmp`, se il progetto si trova altrove va aggiunta anche la sua cartella. Se `sudo p4c-ebpf --version` non trova il comando vuol dire che sudo non cerca in `/usr/local/bin`, e basta un link: `sudo ln -s /usr/local/bin/p4c-ebpf /usr/bin/p4c-ebpf`.
+Lo script si può usare anche da solo, con gli stessi argomenti di `p4c-ebpf`:
+```bash
+scripts/p4c-container.sh --xdp -o out.c examples/drop-udp/drop_udp.p4
+```
 
 ## Uso
 ```text
@@ -96,6 +94,8 @@ sudo scripts/vnic.sh down demo
 Gli indirizzi sono `192.168.100.1` per `ns0` (`veth0`) e `192.168.100.2` per `ns1` (`veth1`).
 
 Può essere attiva una sola istanza alla volta, quindi prima di un nuovo `up` bisogna fare `down`. Se il boot fallisce o va in timeout conviene guardare il log di QEMU (console seriale della VM) in `testbed/vnic-<nome>.log`. Per entrare nella VM l'utente è `debian` e la password `smartnic`.
+
+Se sull'host è caricato il modulo `br_netfilter` (lo caricano ad esempio i pacchetti di podman e docker), i frame che attraversano `br0` e `br1` passano anche dal firewall, che su molte distribuzioni li scarta. Per questo `up` disattiva i sysctl `net.bridge.bridge-nf-call-*` e `down` li riporta ai valori originali. Nel frattempo il firewall non filtra nessun bridge dell'host.
 
 ## Generare traffico
 `scripts/traffic.sh` invia pacchetti da `ns0` verso `ns1` usando `nping`, e permette di scegliere i campi principali degli header senza dover scrivere il comando a mano.

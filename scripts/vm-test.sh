@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Script per automatizzare il test manuale descritto in VM-test.md
+# vm-test.sh - script per automatizzare il test manuale descritto in VM-test.md
 # 
 # Lo scopo di questo script è poi essere tradotto comando per comando
 # in main.rs, solo che effettuare modifiche prima sullo script è più

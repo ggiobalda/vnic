@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vnic.sh — emulazione di una SmartNIC tramite VM QEMU
+# vnic.sh - emulazione di una SmartNIC tramite VM QEMU
 #
 # Crea due namespace (ns0, ns1) collegati attraverso una VM Debian e,
 # opzionalmente, carica un programma eBPF o P4 come XDP sull'interfaccia di ingresso della VM (ens3).
@@ -32,9 +32,11 @@ NC="$TESTBED_DIR/network-config"
 UD="$TESTBED_DIR/user-data"
 OBJ_OUT="$TESTBED_DIR/obj.o"
 P4_C_OUT="$TESTBED_DIR/code-p4.c"
+P4_H_OUT="$TESTBED_DIR/code-p4.h"
 
-# header di p4c necessari per compilare il C generato da p4c-ebpf (vedi README.md nella cartella)
+# header di p4c necessari per compilare e script wrapper del container p4c-ebpf
 P4C_RUNTIME="$SCRIPT_DIR/p4c-runtime"
+P4C_CONTAINER="$SCRIPT_DIR/p4c-container.sh"
 
 # indirizzi MAC delle interfacce della VM
 MAC0="52:54:00:12:34:56"
@@ -42,6 +44,10 @@ MAC1="52:54:00:12:34:57"
 
 # timeout (s) per l'attesa del boot della VM
 BOOT_TIMEOUT=60
+
+# sysctl di br_netfilter e file in cui 'up' salva i valori originali, ripristinati da 'down'
+BR_NF_KEYS=(bridge-nf-call-iptables bridge-nf-call-ip6tables bridge-nf-call-arptables)
+BR_NF_SAVE="$TESTBED_DIR/br-netfilter.save"
 
 # ------------------------------ UTILITY ------------------------------
 
@@ -110,7 +116,7 @@ Opzioni per 'up':
 Note:
     L'immagine Debian cloud deve trovarsi in testbed/debian-12-generic-amd64.qcow2; se manca, 'up' propone di scaricarla.
     Le opzioni --attach-ebpf e --attach-p4 sono mutuamente esclusive.
-    --attach-p4 richiede p4c-ebpf, da installare a parte (vedi README, sezione Requisiti).
+    --attach-p4 usa p4c-ebpf se installato, altrimenti lo esegue in un container con podman o docker.
     Senza --attach-ebpf né --attach-p4 la VM inoltra tutti i frame senza filtrarli.
 
 Topologia creata:
@@ -186,8 +192,15 @@ check_dependencies() {
     require_cmd qemu-img
     require_cmd xorriso
     if [[ "$ATTACH_EBPF" == *.c || -n "$ATTACH_P4" ]]; then require_cmd clang; fi
-    if [[ -n "$ATTACH_P4" ]] && ! command -v p4c-ebpf &>/dev/null; then
-        die "comando 'p4c-ebpf' non trovato, va installato a parte (vedi README, sezione Requisiti)"
+    # compilatore P4: p4c-ebpf se installato, altrimenti il wrapper col container
+    if [[ -n "$ATTACH_P4" ]]; then
+        if command -v p4c-ebpf &>/dev/null; then
+            P4C="p4c-ebpf"
+        elif command -v podman &>/dev/null || command -v docker &>/dev/null; then
+            P4C="$P4C_CONTAINER"
+        else
+            die "--attach-p4 richiede p4c-ebpf oppure podman/docker installati (vedi README, sezione Requisiti)"
+        fi
     fi
     return 0
 }
@@ -221,7 +234,7 @@ resolve_obj() {
                 ;;
 
             *.c)
-                log "compilazione $ATTACH_EBPF (clang, target bpf)"
+                log "compilazione $ATTACH_EBPF"
                 clang -O2 -target bpf -c "$ATTACH_EBPF" -o "$OBJ_OUT"
                 OBJ="$OBJ_OUT"
                 ;;
@@ -244,8 +257,11 @@ resolve_obj() {
 # traduce il P4 in C con p4c-ebpf (--xdp: codice per l'hook XDP invece che TC)
 # e lo compila con clang usando gli header di p4c in P4C_RUNTIME
 compile_p4() {
-    log "traduzione $ATTACH_P4 in C (p4c-ebpf) e compilazione (clang, target bpf)"
-    p4c-ebpf --xdp -o "$P4_C_OUT" "$ATTACH_P4"
+    if [[ "$P4C" == "$P4C_CONTAINER" ]]; then
+        log "p4c-ebpf non installato, uso il container p4lang/p4c (al primo avvio scarica l'immagine)"
+    fi
+    log "traduzione $ATTACH_P4 in C (p4c-ebpf) e compilazione"
+    "$P4C" --xdp -o "$P4_C_OUT" "$ATTACH_P4"
     clang -O2 -target bpf -I "$P4C_RUNTIME" -c "$P4_C_OUT" -o "$OBJ_OUT"
     OBJ="$OBJ_OUT"
     # p4c-ebpf mette il programma nella sezione "tc" anche con --xdp
@@ -281,6 +297,38 @@ setup_host_bridge() {
         ip link set veth"$1"-br master br"$1"
         ip link set veth"$1"-br up
     fi
+}
+
+# funzioni per disattivare (con up) e riattivare (con down) il filtraggio del firewall sui bridge
+# necessario in quanto podman e docker caricano solitamente il modulo br_netfilter
+disable_br_netfilter() {
+    local dir=/proc/sys/net/bridge key
+    # modulo non caricato: i bridge non passano dal firewall
+    if [[ ! -d "$dir" ]]; then return 0; fi
+
+    # se il file esiste già, i valori originali li ha salvati un 'up' non chiuso con 'down'
+    if [[ ! -f "$BR_NF_SAVE" ]]; then
+        for key in "${BR_NF_KEYS[@]}"; do
+            echo "$key $(cat "$dir/$key")"
+        done > "$BR_NF_SAVE"
+    fi
+
+    for key in "${BR_NF_KEYS[@]}"; do
+        echo 0 > "$dir/$key"
+    done
+}
+
+restore_br_netfilter() {
+    local dir=/proc/sys/net/bridge key value
+    if [[ ! -f "$BR_NF_SAVE" ]]; then return 0; fi
+
+    # il modulo potrebbe essere stato rimosso nel frattempo
+    if [[ -d "$dir" ]]; then
+        while read -r key value; do
+            echo "$value" > "$dir/$key"
+        done < "$BR_NF_SAVE"
+    fi
+    rm -f "$BR_NF_SAVE"
 }
 
 # --------------------------------- VM ---------------------------------
@@ -432,7 +480,8 @@ teardown() {
         fi
     done
 
-    rm -f "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ_OUT" "$P4_C_OUT" "$QEMU_LOG"
+    restore_br_netfilter
+    rm -f "$IMG" "$SEED" "$MD" "$NC" "$UD" "$OBJ_OUT" "$P4_C_OUT" "$P4_H_OUT" "$QEMU_LOG"
 }
 
 # ------------------------------ COMANDI ------------------------------
@@ -448,7 +497,9 @@ cmd_up() {
 
     ensure_base_image
     resolve_obj
-    
+
+    disable_br_netfilter
+
     for i in {0,1}; do
         log "infrastruttura lato $i: ns$i (192.168.100.$((i + 1))), veth$i, br$i, tap$i"
         setup_namespace $i
