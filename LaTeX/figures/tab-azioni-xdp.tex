@@ -1,0 +1,20 @@
+% Risultati dell'esperimento sulle azioni XDP (sezione 3.3): 5 pacchetti per azione.
+\begin{table}[H]
+    \centering
+    \footnotesize
+    \caption{Azioni XDP nella VM: frame osservati su \texttt{tap0} e \texttt{tap1} e contatori di \texttt{ens3} che aumentano (5 pacchetti per azione)}
+    \label{tab:azioni-xdp}
+    \begin{tabular}{@{}lcc>{\raggedright\arraybackslash}p{5.6cm}@{}}
+        \toprule
+        \textbf{Azione} & \textbf{verso ns1} & \textbf{verso ns0} & \textbf{Contatori di \texttt{ens3}} \\
+         & (\texttt{tap1}) & (\texttt{tap0}) & \\
+        \midrule
+        PASS                       & 5 & 0 & nessuno dedicato \\
+        DROP                       & 0 & 0 & \texttt{xdp\_drops} \\
+        ABORTED                    & 0 & 0 & \texttt{xdp\_drops}, tracepoint \texttt{xdp\_exception} \\
+        TX                         & 0 & 5 & \texttt{xdp\_tx} \\
+        REDIRECT, \texttt{ens4} senza XDP & 0 & 0 & \texttt{xdp\_redirects} \\
+        REDIRECT, \texttt{ens4} con XDP   & 5 & 0 & \texttt{xdp\_redirects} \\
+        \bottomrule
+    \end{tabular}
+\end{table}

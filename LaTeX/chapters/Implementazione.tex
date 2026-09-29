@@ -1,0 +1,177 @@
+\chapter{Implementazione}\label{ch:implementazione}
+
+Questo capitolo descrive come è stato realizzato vnic. La sezione~\ref{sec:processo} ripercorre il processo seguito, dal test manuale fino al tool finale, mentre le sezioni successive descrivono lo script \texttt{vnic.sh} (sezione~\ref{sec:vnic-sh}), la compilazione dei programmi eBPF e P4 (sezione~\ref{sec:compilazione}), la preparazione della VM e il caricamento del programma al suo interno (sezione~\ref{sec:config-vm}) e lo script per generare traffico di prova (sezione~\ref{sec:traffico}).
+
+\section{Dal test manuale a vnic}\label{sec:processo}
+
+vnic è il risultato di un processo logico in tre fasi, documentate e presenti nella repository: un test manuale, uno script che lo automatizza e infine il tool vero e proprio. Il test manuale serve a capire come costruire l'intera infrastruttura descritta nel capitolo~\ref{ch:architettura} e a verificare che funzioni, lo script la rende ripetibile e vnic la generalizza. La tabella~\ref{tab:evoluzione} riassume come cambiano i vari aspetti da uno stadio all'altro.
+
+\subsection{Test manuale}
+
+Il test manuale, documentato in \texttt{docs/VM-test.md}, costruisce l'infrastruttura a mano, comando per comando. Sull'host vengono creati i namespace, le veth pair, le TAP e i bridge \texttt{br0} e \texttt{br1}, con gli stessi comandi \texttt{ip} che esegue vnic.
+
+Per la VM si usa l'hypervisor QEMU, data la semplicità di gestione e la leggerezza, con un'immagine cloud di Debian 12~\cite{debian-cloud}, cioè un'immagine senza installer, pensata per essere configurata automaticamente al boot. In questo stadio, però, il file oggetto del programma eBPF viene copiato direttamente nell'immagine con \texttt{virt-customize}~\cite{virt-customize} e, una volta avviata la VM, dal suo terminale si crea il bridge \texttt{brVM} e si carica il programma XDP su \texttt{ens3}.
+
+Il programma usato è un semplice filtro che scarta i pacchetti UDP, lo stesso dell'esempio \texttt{drop-udp} (capitolo~\ref{ch:casouso}). La verifica consiste nel lanciare \texttt{tcpdump} su \texttt{tap0}, \texttt{tap1} e \texttt{brVM}, inviare 5 ping da \texttt{ns0} a \texttt{ns1} e un datagramma UDP con \texttt{nc}: i ping devono comparire in tutti e tre i punti di ascolto, mentre il pacchetto UDP solo su \texttt{tap0}. Oltre al test vero e proprio la procedura descrive anche una controprova, cioè scollegare \texttt{ens3} da \texttt{brVM} e verificare che il traffico non raggiunga più \texttt{tap1}, e come individuare il componente guasto in base a quali punti di ascolto registrano traffico.
+
+\subsection{Script di test}
+
+Lo script \texttt{vm-test.sh} automatizza la procedura descritta sopra, con i comandi \texttt{up}, \texttt{run}, \texttt{status} e \texttt{down}. Essendo più semplice da modificare e da correggere di un tool completo, fa da prototipo su cui provare le soluzioni prima di portarle in vnic. Rispetto al test manuale cambiano principalmente due aspetti:
+\begin{itemize}
+    \item il file oggetto e i comandi che creano \texttt{brVM} e caricano il programma vengono passati alla VM all'avvio, per cui la VM è pronta senza alcun intervento manuale e \texttt{virt-customize} non serve più;
+    \item la verifica (\texttt{run}) cattura il traffico su \texttt{tap0} e \texttt{tap1} in file \texttt{.pcap}, conta i pacchetti ICMP e UDP e stampa un esito, PASS o FAIL.
+\end{itemize}
+Già in questo stadio l'immagine base della VM non viene modificata e l'attesa del boot avviene leggendo il log della VM: sono due soluzioni che vnic eredita dallo script.
+
+\subsection{Il tool vnic}
+
+\texttt{vnic.sh} nasce da una copia di \texttt{vm-test.sh} e ne generalizza il funzionamento:
+\begin{itemize}
+    \item il programma da caricare è scelto dall'utente, come sorgente C, file oggetto già compilato o sorgente P4. In assenza di esso la VM inoltra tutti i frame;
+    \item la verifica non fa parte del tool: vnic si occupa solo dell'infrastruttura e del caricamento del programma. L'utente può comunque verificare la propria logica generando del traffico con lo script \texttt{traffic.sh} (sezione~\ref{sec:traffico}) e osservando i risultati;
+    \item gli script \texttt{verify.sh} degli esempi (capitolo~\ref{ch:casouso}), derivati dal comando \texttt{run} di \texttt{vm-test.sh}, servono a testare il funzionamento del tool;
+    \item si aggiungono i controlli sugli argomenti e sulle dipendenze, il download dell'immagine base, il limite di un'istanza alla volta e la traduzione dei programmi P4.
+\end{itemize}
+
+\input{figures/tab-evoluzione}
+
+\section{Lo script vnic.sh}\label{sec:vnic-sh}
+
+\texttt{vnic.sh} offre quattro comandi:
+\begin{itemize}
+    \item \texttt{up <nome>}: crea l'infrastruttura e avvia la VM, eventualmente con un programma XDP indicato da \texttt{-{}-attach-ebpf} (file \texttt{.c} o \texttt{.o}) o da \texttt{-{}-attach-p4} (file \texttt{.p4}). Le due opzioni sono mutuamente esclusive;
+    \item \texttt{down <nome>}: ferma la VM e rimuove tutto ciò che \texttt{up} ha creato;
+    \item \texttt{status}: mostra se la VM è in esecuzione e quali namespace e interfacce sono presenti;
+    \item \texttt{help}: mostra la sintassi dei comandi, con alcuni esempi.
+\end{itemize}
+\texttt{up} e \texttt{down} richiedono i privilegi di root, dato che creano e rimuovono namespace e interfacce e modificano alcuni parametri del kernel. Il nome passato a \texttt{up} identifica l'istanza e serve a distinguerne i file, cioè il PID di QEMU e il log della VM. Può comunque essere attiva una sola istanza alla volta, perché i nomi delle interfacce e gli indirizzi sono fissi: prima di partire, \texttt{up} controlla che non ci sia già una VM in esecuzione. Tutti i file generati, compresa l'immagine base della VM, si trovano nella cartella \texttt{testbed/}, esclusa dal versionamento di \texttt{git}.
+
+Lo script è eseguito con le opzioni \texttt{set -euo pipefail} della shell, che lo fermano al primo comando fallito, all'uso di una variabile non definita o a un errore in una pipe. In questo modo un errore non passa inosservato: vnic si ferma invece di proseguire con un'infrastruttura incompleta.
+
+La figura~\ref{fig:sequenza-up} mostra le fasi di \texttt{up}.
+
+\begin{figure}[H]
+    \centering
+    \input{figures/sequenza-up}
+    \caption{Fasi del comando \texttt{up} di \texttt{vnic.sh}, con le sezioni in cui sono descritte}
+    \label{fig:sequenza-up}
+\end{figure}
+
+\begin{enumerate}
+    \item \textbf{Controlli preliminari}: lettura degli argomenti, verifica dei privilegi e della presenza dei comandi necessari (\texttt{ip}, \texttt{qemu-system-x86\_64}, \texttt{qemu-img}, \texttt{xorriso}, più \texttt{clang} e il compilatore P4 solo se servono) e controllo che non ci siano altre istanze attive. Se manca un comando, lo script si ferma subito indicando quale.
+    \item \textbf{Programma XDP}: se l'immagine base non è presente, lo script propone di scaricarla (senza chiedere conferma con l'opzione \texttt{-y}). Il download avviene su un file temporaneo, rinominato solo a download completato, così che un'interruzione non lasci un'immagine incompleta. Poi, se è stato indicato un programma, viene prodotto il file oggetto da caricare.
+    \item \textbf{Infrastruttura dell'host}: per ciascuno dei due lati vengono creati il namespace, la veth pair con il suo indirizzo, la TAP e il bridge. Ogni funzione controlla prima se l'elemento esiste già, così da non fallire se è rimasto da un'esecuzione precedente. Prima di creare i bridge, inoltre, vnic impedisce al firewall dell'host di filtrare il traffico che li attraversa: se è caricato il modulo \texttt{br\_netfilter}, installato per esempio insieme a podman e docker, i frame inoltrati da un bridge passano anche dal firewall, che su molte distribuzioni li scarta prima che raggiungano la VM. \texttt{up} salva quindi i valori dei parametri \texttt{net.bridge.bridge-nf-call-*} e li porta a 0, mentre \texttt{down} li ripristina.
+    \item \textbf{Configurazione VM}: vengono generati i file di configurazione e il disco che li contiene, viene creato un overlay dell'immagine base e infine viene avviato QEMU.
+    \item \textbf{Boot e log}: lo script legge il log della VM finché il boot non è completato, poi stampa un riepilogo con il programma caricato, gli indirizzi dei namespace e il percorso del log.
+\end{enumerate}
+
+\texttt{down} esegue le stesse operazioni in ordine inverso. Invia a QEMU un segnale di terminazione e aspetta che il processo sia terminato, poi rimuove TAP, bridge e veth pair (eliminando un capo di una veth pair si elimina anche l'altro) e i due namespace. Infine ripristina i parametri del firewall modificati da \texttt{up} e cancella i file temporanei, compreso il log della VM. Anche qui ogni rimozione controlla prima che l'elemento esista, per cui \texttt{down} funziona anche dopo un \texttt{up} interrotto a metà.
+
+\section{Compilazione dei programmi}\label{sec:compilazione}
+
+Qualunque sia il linguaggio di partenza, nella VM viene caricato un file oggetto eBPF. Il compito di produrlo spetta alla funzione \texttt{resolve\_obj}, che distingue tre casi:
+\begin{itemize}
+    \item \textbf{file \texttt{.o}}: il file oggetto è già compilato e viene usato così com'è;
+    \item \textbf{file \texttt{.c}}: il sorgente viene compilato con \texttt{clang -O2 -target bpf -c}, lo stesso comando usato nel test manuale. Il programma deve trovarsi nella sezione \texttt{xdp} del file oggetto, cioè essere dichiarato con \texttt{SEC("xdp")};
+    \item \textbf{file \texttt{.p4}}: il sorgente viene prima tradotto in C con \texttt{p4c-ebpf} e poi compilato con \texttt{clang}, come mostrato nel listing~\ref{lst:compile-p4}.
+\end{itemize}
+
+\begin{lstlisting}[language=bash, basicstyle=\ttfamily\scriptsize, caption={Traduzione e compilazione di un programma P4 in \texttt{vnic.sh}}, label={lst:compile-p4}]
+"$P4C" --xdp -o "$P4_C_OUT" "$ATTACH_P4"
+clang -O2 -target bpf -I "$P4C_RUNTIME" -c "$P4_C_OUT" -o "$OBJ_OUT"
+OBJ="$OBJ_OUT"
+OBJ_SEC="tc"
+\end{lstlisting}
+
+In tutti e tre i casi un errore di compilazione emerge già sull'host: \texttt{clang} o \texttt{p4c-ebpf} terminano con un errore e \texttt{set -e} ferma vnic prima che venga creata l'infrastruttura. Il verifier, invece, controlla il programma solo quando viene caricato, cioè dentro la VM.
+
+L'opzione \texttt{-{}-xdp} indica a \texttt{p4c-ebpf} di generare codice per l'hook XDP invece che per TC, un altro punto del kernel in cui si possono agganciare programmi eBPF di rete~\cite{p4c-ebpf}. Il C prodotto, però, non è ancora compilabile: usa delle macro (lettura dei campi del pacchetto, conversione dell'ordine dei byte, definizione delle tabelle) definite in due header del runtime di p4c, \texttt{ebpf\_kernel.h} ed \texttt{ebpf\_common.h}. Questi header fanno parte dei sorgenti del compilatore, ma non vengono installati insieme a esso, né con il pacchetto né nell'immagine del container. Per questo la repository ne contiene una copia in \texttt{scripts/p4c-runtime/}, passata a \texttt{clang} con l'opzione \texttt{-I}. Nella copia gli include verso le librerie eBPF, che nell'originale puntano a percorsi interni alla repository di p4c, sono sostituiti con quelli di sistema, già presenti in \texttt{libbpf}.
+
+Un'altra particolarità è che \texttt{p4c-ebpf} mette il programma nella sezione \texttt{tc} anche quando genera codice XDP. Il nome della sezione serve solo a trovare il programma all'interno del file oggetto, mentre il tipo di programma lo decide il comando usato per caricarlo~\cite{cilium-bpf}. Per questo vnic tiene la sezione in una variabile, impostata a \texttt{xdp} per i programmi in C e \texttt{tc} per quelli in P4, usata poi nel comando di caricamento nella VM.
+
+\subsection{Il compilatore P4 in un container}
+
+\texttt{p4c-ebpf} non è disponibile nei repository della maggior parte delle distribuzioni, e il progetto p4c fornisce pacchetti solo per alcune di esse, come Ubuntu. Per non costringere l'utente a compilarlo dai sorgenti, è stato sviluppato lo script \texttt{p4c-container.sh}, che esegue il compilatore all'interno dell'immagine ufficiale \texttt{p4lang/p4c}~\cite{p4c-docker} usando podman o, in alternativa, docker. vnic cerca prima \texttt{p4c-ebpf} installato sul sistema, e solo se manca usa lo script al suo posto.
+
+Lo script accetta gli stessi argomenti di \texttt{p4c-ebpf} e li passa al compilatore nel container, così che per vnic i due siano intercambiabili. Il container però non vede il filesystem dell'host, per cui lo script monta al suo interno la cartella corrente e quella di ogni file passato come argomento, allo stesso percorso che hanno sull'host: in questo modo i percorsi dei file restano validi anche dentro il container. Il container viene rimosso al termine della compilazione, e l'immagine, di circa 3\,GB, viene scaricata automaticamente al primo utilizzo.
+
+Lo script tiene conto anche di alcune differenze tra i sistemi. Sui sistemi con SELinux attivo disattiva, solo per questo container, il controllo che altrimenti impedirebbe di leggere le cartelle montate. Se invece viene usato docker, che a differenza di podman funziona solo se il suo servizio è attivo, lo script controlla prima che il servizio risponda e, in caso contrario, spiega all'utente come avviarlo.
+
+\section{La VM e il caricamento del programma}\label{sec:config-vm}
+
+La VM è l'elemento che emula la SmartNIC: riceve i frame da \texttt{tap0} su \texttt{ens3}, li sottopone al programma XDP e inoltra verso \texttt{ens4}, attraverso \texttt{brVM}, quelli che il programma lascia passare. Questa sezione descrive come vnic la avvia, quali comandi vi esegue e come vi carica il programma.
+
+\subsection{Immagine e avvio}
+
+La VM usa l'immagine cloud di Debian 12 in formato qcow2, di circa 400\,MB, salvata in \texttt{testbed/}. L'immagine base non viene mai modificata: a ogni \texttt{up} viene creato un overlay, cioè un secondo file qcow2 che contiene solo le differenze rispetto all'immagine base, dove finiscono tutte le scritture della VM. L'overlay viene cancellato da \texttt{down}, per cui ogni avvio parte da un'immagine pulita, e un arresto brusco di QEMU non rischia di danneggiare l'immagine base.
+
+QEMU viene avviato in background con le seguenti opzioni~\cite{qemu-networking}:
+\begin{itemize}
+    \item \texttt{-enable-kvm -m 1024 -smp 2}: abilita la virtualizzazione hardware tramite KVM e assegna alla VM 1\,GB di RAM e 2 CPU virtuali;
+    \item due opzioni \texttt{-drive}, una per l'overlay e una per il disco di configurazione, entrambe collegate come dischi virtio;
+    \item due coppie di opzioni \texttt{-netdev tap} e \texttt{-device virtio-net-pci}: la prima collega QEMU alla TAP già creata sull'host, la seconda crea la scheda di rete vista dalla VM, con il MAC fissato da vnic. Le opzioni \texttt{script=no} e \texttt{downscript=no} indicano a QEMU di non configurare la TAP, dato che se ne occupa vnic;
+    \item \texttt{-nographic}: invece di aprire una finestra, QEMU inoltra la console seriale della VM sul suo output, che vnic salva nel file di log dell'istanza.
+\end{itemize}
+
+Proprio il log serve a capire quando la VM è pronta. Al termine della configurazione la VM stampa sulla console un messaggio del tipo ``Cloud-init \dots\ finished'', per cui \texttt{up} controlla il log una volta al secondo finché non lo trova, invece di aspettare un tempo fisso. Nel frattempo verifica anche che QEMU sia ancora in esecuzione, per accorgersi subito di un avvio fallito, e si ferma con un errore se la VM non è pronta entro 60 secondi. In media l'intero comando \texttt{up} richiede circa 30 secondi, quasi tutti dovuti al boot della VM.
+
+\subsection{I comandi eseguiti nella VM}\label{sec:comandi-vm}
+
+Per trasformare la VM in una NIC bastano pochi comandi, eseguiti al termine del boot: attivare \texttt{ens3} ed \texttt{ens4}, collegarle a un bridge e caricare il programma su \texttt{ens3}. vnic li fa eseguire a cloud-init~\cite{cloud-init}, un servizio incluso nelle immagini cloud che durante il boot legge la configurazione da un disco con etichetta \texttt{cidata}. Il file principale è lo \texttt{user-data}, riportato nel listing~\ref{lst:user-data}.
+
+\begin{lstlisting}[caption={File \texttt{user-data} generato da vnic con un programma in C (contenuto base64 abbreviato)}, label={lst:user-data}]
+#cloud-config
+password: smartnic
+chpasswd:
+  expire: false
+ssh_pwauth: true
+write_files:
+  - path: /root/filter.o
+    encoding: b64
+    content: f0VMRgIBAQAAAAAAAAAAAAEA9wABAAAA...
+    permissions: '0644'
+runcmd:
+  - ip link set ens3 up
+  - ip link set ens4 up
+  - ip link add brVM type bridge
+  - ip link set brVM up
+  - ip link set ens3 master brVM
+  - ip link set ens4 master brVM
+  - ip link set ens3 xdp obj /root/filter.o sec xdp
+\end{lstlisting}
+
+Il file oggetto viene scritto in \texttt{/root/filter.o} a partire dal suo contenuto in base64 (riga 9), mentre la sezione \texttt{runcmd} crea \texttt{brVM} (righe 12--17) e carica il programma su \texttt{ens3} (riga 18). Il blocco \texttt{write\_files} e l'ultimo comando sono presenti solo se è stato indicato un programma: in caso contrario la VM si limita a inoltrare tutti i frame da \texttt{ens3} a \texttt{ens4} e viceversa. Le prime righe impostano la password dell'utente \texttt{debian}, che serve solo ad accedere alla VM dalla console.
+
+Accanto allo \texttt{user-data}, vnic genera altri due file: un \texttt{meta-data} con un identificativo diverso a ogni avvio, perché cloud-init non consideri la VM già configurata e non salti i comandi, e un \texttt{network-config} che assegna a \texttt{ens3} ed \texttt{ens4} degli indirizzi statici, così che il boot non resti in attesa di un server DHCP. I tre file vengono infine inseriti con \texttt{xorriso} in un'immagine ISO con etichetta \texttt{cidata}, che la VM vede come un secondo disco.
+
+\subsection{Caricamento del programma}\label{sec:caricamento}
+
+L'ultimo comando del listing~\ref{lst:user-data} è quello che, nel modello di una NIC con offload XDP, corrisponde al caricamento del programma sulla scheda. \texttt{ip} apre il file oggetto, cerca il programma nella sezione indicata e lo carica nel kernel, dove viene controllato dal verifier. Solo se il controllo ha successo il programma viene agganciato all'hook XDP di \texttt{ens3}, e da quel momento viene eseguito su ogni frame in arrivo su quell'interfaccia.
+
+Il comando non specifica in quale modalità agganciare il programma: il kernel usa quella nativa se il driver la supporta, e altrimenti ripiega su quella generica. Il driver \texttt{virtio\_net} della VM supporta la modalità nativa, e infatti \texttt{ip link show ens3} indica \texttt{xdp} e non \texttt{xdpgeneric}: il programma viene eseguito dal driver appena il frame viene ricevuto, prima che il kernel allochi le strutture per il resto dello stack di rete. È il punto più vicino alla scheda disponibile nella VM, ed è quindi quello che meglio approssima l'offload su una SmartNIC. Al primo caricamento, inoltre, il driver scrive nel log della VM un avviso:
+\begin{lstlisting}[numbers=none, basicstyle=\ttfamily\scriptsize]
+XDP request 3 queues but max is 1. XDP_TX and XDP_REDIRECT will operate in a slower locked tx mode
+\end{lstlisting}
+La scheda virtuale ha infatti una sola coda, mentre il driver ne vorrebbe una dedicata a XDP per ogni CPU. Il programma funziona comunque, ma le azioni che trasmettono un frame condividono la coda con il resto del traffico. Caricando il programma, infine, il driver disattiva gli offload di checksum e segmentazione verso QEMU.
+
+Se invece il verifier rifiuta il programma, il comando fallisce e su \texttt{ens3} non viene agganciato nulla, per cui la VM inoltra tutti i frame come se non fosse stato indicato alcun programma. Il motivo del rifiuto si trova nel log della VM, dove \texttt{ip} stampa il messaggio del verifier, per esempio ``invalid access to packet'' se un header viene letto senza prima controllarne la lunghezza.
+Dato che un comando fallito non interrompe cloud-init, vnic considera comunque la VM pronta: in caso di dubbi conviene quindi controllare il log, il cui percorso è stampato nel riepilogo di \texttt{up}.
+
+\subsection{Alternative a cloud-init}
+
+La soluzione adottata ha il vantaggio di usare un'immagine già pronta e mantenuta da Debian, senza dover costruire un sistema apposito, e di configurare tutto con pochi file di testo. D'altra parte è sovradimensionata rispetto al compito: avvia un sistema completo, con servizi che vnic non usa, per poi eseguire solo i sette comandi del listing~\ref{lst:user-data}. Buona parte dei circa 30 secondi di \texttt{up} è spesa proprio in questo boot.
+
+Un'alternativa più leggera sarebbe un kernel minimale, compilato con il solo supporto a virtio, ai bridge e a eBPF, avviato da QEMU insieme a un piccolo filesystem iniziale contenente solo \texttt{ip} e uno script che esegue gli stessi comandi. In questo caso il file oggetto potrebbe essere inserito direttamente nel filesystem, senza bisogno di un disco di configurazione, e il boot richiederebbe pochi secondi.
+Il kernel e il filesystem andrebbero però costruiti e mantenuti a parte, compresi gli aggiornamenti di sicurezza che oggi arrivano con l'immagine di Debian. Questa possibilità è ripresa tra gli sviluppi futuri (sezione~\ref{sec:sviluppi}).
+
+\section{Generazione del traffico}\label{sec:traffico}
+
+Per provare un programma serve inviare pacchetti con caratteristiche precise, per esempio verso una certa porta o con un certo flag TCP. Il test manuale usa \texttt{ping} e \texttt{nc}, che però permettono di generare solo alcuni tipi di pacchetto e non di sceglierne liberamente i campi. Per questo è stato creato lo script \texttt{traffic.sh}, che costruisce ed esegue un comando di \texttt{nping}~\cite{nping}, uno strumento per generare pacchetti di cui si possono impostare i principali campi degli header.
+
+I pacchetti partono sempre da \texttt{veth0} nel namespace \texttt{ns0} e sono diretti a 192.168.100.2, l'indirizzo di \texttt{veth1} in \texttt{ns1}, per cui attraversano la VM e il programma caricato. L'utente sceglie il tipo di pacchetto (ICMP, UDP, TCP o ARP) e, con delle opzioni, i campi da impostare: indirizzi IP e MAC sorgente, MAC di destinazione, porte, flag TCP, TTL, contenuto e numero di pacchetti, 5 se non indicato. Per esempio:
+\begin{lstlisting}[language=bash, numbers=none, columns=fullflexible]
+sudo scripts/traffic.sh tcp --dst-port 8080 --flags syn --count 3
+\end{lstlisting}
+invia 3 segmenti TCP con il flag SYN verso la porta 8080. Lo script usa l'opzione \texttt{-{}-send-eth} di \texttt{nping}, che invia frame Ethernet completi e permette quindi di impostare anche gli indirizzi MAC. Il MAC di destinazione deve però essere quello di \texttt{veth1} o quello di broadcast, altrimenti il frame attraversa la VM ma viene scartato da \texttt{ns1}.
+
+\texttt{traffic.sh} non dà un verdetto: \texttt{nping} stampa i pacchetti inviati e le eventuali risposte, e il risultato va interpretato in base al programma caricato, eventualmente osservando con \texttt{tcpdump} cosa entra ed esce dalla VM su \texttt{tap0} e \texttt{tap1}. È quello che fanno in automatico gli script \texttt{verify.sh} degli esempi, descritti nel capitolo~\ref{ch:casouso}.

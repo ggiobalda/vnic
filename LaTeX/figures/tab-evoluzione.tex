@@ -1,0 +1,24 @@
+% Evoluzione dal test manuale (docs/VM-test.md) a vm-test.sh e vnic.sh (sezione 4.1).
+\begin{table}[H]
+    \centering
+    \footnotesize
+    \caption{Come sono cambiati i principali aspetti dal test manuale a \texttt{vnic.sh}}
+    \label{tab:evoluzione}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{3.7cm}>{\raggedright\arraybackslash}p{3.7cm}>{\raggedright\arraybackslash}p{3.7cm}@{}}
+        \toprule
+        \textbf{Aspetto} & \textbf{Test manuale} & \textbf{\texttt{vm-test.sh}} & \textbf{\texttt{vnic.sh}} \\
+        \midrule
+        infrastruttura dell'host & comandi eseguiti a mano & creata dallo script & creata dallo script \\
+        \addlinespace
+        programma XDP & filtro UDP fisso & filtro UDP fisso & scelto dall'utente (C, file oggetto o P4) \\
+        \addlinespace
+        configurazione VM & comandi manuali nel terminale della VM & comandi eseguiti da cloud-init al boot & comandi eseguiti da cloud-init al boot \\
+        \addlinespace
+        immagine della VM & immagine base modificata & overlay dell'immagine base & overlay dell'immagine base, scaricata se assente \\
+        \addlinespace
+        attesa del boot & login manuale & lettura automatica del log della VM & lettura automatica del log della VM \\
+        \addlinespace
+        verifica & \texttt{tcpdump}, \texttt{ping} e \texttt{nc} a mano & comando \texttt{run}, con esito PASS o FAIL & separata dal tool: \texttt{traffic.sh} e \texttt{verify.sh} degli esempi \\
+        \bottomrule
+    \end{tabular}
+\end{table}

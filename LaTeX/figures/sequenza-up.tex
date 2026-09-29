@@ -1,0 +1,26 @@
+% Fasi del comando 'up' di vnic.sh (sezione 4.2), da includere con \input{figures/sequenza-up}
+% dentro un ambiente figure.
+% ogni fase: riquadro di altezza fissa con il testo allineato in alto
+\newcommand{\fase}[1]{\parbox[t][2.2cm][t]{2.45cm}{\raggedright\hyphenpenalty=10000 #1}}
+\begin{tikzpicture}[
+    font=\scriptsize,
+    fase/.style={draw, rounded corners=3pt, fill=blue!5, inner sep=3pt, anchor=north},
+    titolo/.style={font=\scriptsize\bfseries},
+    rif/.style={font=\scriptsize, text=black!60},
+    freccia/.style={-{Stealth[length=2mm]}, thick},
+]
+    \node[fase] (c) at (0,0) {\fase{\textbf{1. Controlli}\\[2pt]argomenti\\privilegi di root\\comandi necessari\\istanza unica}};
+    \node[fase] (p) at (3.0,0) {\fase{\textbf{2. Programma}\\[2pt]immagine base\\compilazione C\\o traduzione P4}};
+    \node[fase] (h) at (6.0,0) {\fase{\textbf{3. Host}\\[2pt]firewall sui bridge\\per ogni lato: namespace, veth, TAP, bridge}};
+    \node[fase, fill=orange!10] (v) at (9.0,0) {\fase{\textbf{4. VM}\\[2pt]file di configurazione\\\texttt{seed.iso}\\overlay qcow2\\avvio QEMU}};
+    \node[fase, fill=orange!10] (a) at (12.0,0) {\fase{\textbf{5. Attesa}\\[2pt]lettura del log fino a fine cloud-init\\riepilogo}};
+
+    \foreach \x/\y in {c/p, p/h, h/v, v/a}
+        \draw[freccia] (\x.east |- 0,-1.25) -- (\y.west |- 0,-1.25);
+
+    \node[rif, below=1mm of c] {sez.~\ref{sec:vnic-sh}};
+    \node[rif, below=1mm of p] {sez.~\ref{sec:compilazione}};
+    \node[rif, below=1mm of h] {sez.~\ref{sec:topologia}};
+    \node[rif, below=1mm of v] {sez.~\ref{sec:config-vm}};
+    \node[rif, below=1mm of a] {sez.~\ref{sec:config-vm}};
+\end{tikzpicture}
