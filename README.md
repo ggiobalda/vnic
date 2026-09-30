@@ -26,6 +26,7 @@ vnic si occupa solo dell'infrastruttura e del caricamento del programma, la gene
 - `scripts/traffic.sh`: genera traffico di prova da `ns0` verso `ns1` usando `nping`
 - `scripts/p4c-container.sh`: esegue `p4c-ebpf` nel container `p4lang/p4c`, usato da vnic se il compilatore non è installato
 - `scripts/p4c-runtime/`: header di p4c necessari per compilare il C generato da `p4c-ebpf` (il perché è spiegato nel README della cartella)
+- `scripts/bench.sh`: misura latenza e throughput di vnic rispetto a una veth pair diretta
 - `scripts/vm-test.sh`: prima automatizzazione del test manuale, da cui è nato `vnic.sh`
 - `examples/`: filtri di prova, ognuno con il suo README e uno script `verify.sh`
 - `docs/`: procedura manuale passo passo, schema e riferimenti
