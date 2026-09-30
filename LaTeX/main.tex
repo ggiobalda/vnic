@@ -30,9 +30,13 @@
 % Schemi (figures/architettura.tex)
 \usepackage{tikz}
 \usetikzlibrary{positioning,fit,arrows.meta,calc,backgrounds}
+% Grafici (figures/bench-throughput.tex)
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 % Per inserire gli hyperlinks tra i vari elementi del testo. Va caricato per ultimo
 \usepackage{hyperref}
-
+% per poter inserire commenti
+\usepackage{comment}
 % -----------------------------------------------------------------
 
 % Modifica lo stile dell'header
@@ -193,6 +197,7 @@
 \include{chapters/Architettura}
 \include{chapters/Implementazione}
 \include{chapters/CasoDUso}
+\include{chapters/Valutazione}
 
 \end{document}
 % -----------------------------------------------------------------
