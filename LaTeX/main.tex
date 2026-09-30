@@ -110,6 +110,22 @@
     tabsize=2
 } \lstset{style=codeStyle}
 
+% Stile per le sessioni al terminale (capitolo Caso d'uso): testo a 8pt, così le righe
+% dell'help (fino a 92 caratteri, escluse le note) stanno in una riga, senza numeri di riga e
+% con i comandi digitati dall'utente (le righe che iniziano con "$ ") colorati
+\lstdefinestyle{terminale}{
+    style=longBlock,
+    basicstyle=\ttfamily\fontsize{8}{9.5}\selectfont,
+    % larghezza naturale dei caratteri (il font è monospaziato, quindi l'allineamento resta)
+    columns=fullflexible,
+    % apici dritti come nel terminale
+    upquote=true,
+    % le righe troppo lunghe vanno a capo solo tra una parola e l'altra
+    breakatwhitespace=true,
+    numbers=none,
+    moredelim=[l][\color{RoyalBlue}]{\$\ }
+}
+
 % listings non gestisce l'UTF-8: senza questa riga i commenti in italiano
 % del codice (è, à, può, ...) bloccano la compilazione dentro \lstinputlisting
 \lstset{literate={à}{{\`a}}1 {è}{{\`e}}1 {é}{{\'e}}1 {ì}{{\`i}}1 {ò}{{\`o}}1 {ù}{{\`u}}1
@@ -148,13 +164,19 @@
 \raggedbottom
 
 % -----------------------------------------------------------------
-% Versione parziale della tesi: contiene solo i capitoli già scritti (3 e 4).
+% Versione parziale della tesi: contiene solo i capitoli già scritti (3, 4 e 5).
 % I capitoli mancanti non sono inclusi, per cui i loro numeri vengono impostati
 % a mano: i riferimenti a essi riportano il numero giusto, ma senza link.
 \makeatletter
-\newlabel{ch:casouso}{{5}{}{Caso d'uso}{}{}}
 \newlabel{ch:valutazione}{{6}{}{Valutazione e conclusioni}{}{}}
 \newlabel{sec:sviluppi}{{6.5}{}{Conclusioni e sviluppi futuri}{}{}}
+% anche l'appendice non è inclusa: i listing citati nei capitoli 3 e 5 hanno
+% il numero che avranno nell'appendice completa (chapters/AppendiceA.tex)
+\newlabel{lst:drop-udp-c}{{A.1}{}{}{}{}}
+\newlabel{lst:drop-udp-p4}{{A.2}{}{}{}{}}
+\newlabel{lst:tcp-c}{{A.3}{}{}{}{}}
+\newlabel{lst:tcp-p4}{{A.4}{}{}{}{}}
+\newlabel{lst:xdp-actions}{{A.7}{}{}{}{}}
 \makeatother
 
 % La bibliografia non è ancora inclusa: le citazioni non stampano nulla
@@ -170,12 +192,7 @@
 \setcounter{chapter}{2}
 \include{chapters/Architettura}
 \include{chapters/Implementazione}
-
-\appendix
-
-% dell'appendice completa serve solo il listing citato nel capitolo 3
-\chapter{Sorgenti}
-\lstinputlisting[language=C, caption={Programma di prova per le azioni XDP (sezione~\ref{sec:azioni-xdp})}, label={lst:xdp-actions}]{listings/xdp_actions.c}
+\include{chapters/CasoDUso}
 
 \end{document}
 % -----------------------------------------------------------------
