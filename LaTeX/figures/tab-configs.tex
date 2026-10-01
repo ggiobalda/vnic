@@ -1,0 +1,10 @@
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{0.6\linewidth}@{}}
+    \toprule
+    \textbf{Configurazione} & \textbf{Descrizione} \\
+    \midrule
+    veth & \texttt{ns0} e \texttt{ns1} collegati da una sola veth pair, senza VM \\
+    no prog. & vnic senza programma, la VM inoltra tutti i frame \\
+    eBPF & vnic con il filtro \texttt{drop-udp} in eBPF \\
+    P4 & vnic con il filtro \texttt{drop-udp} in P4 \\
+        \bottomrule
+\end{tabular}

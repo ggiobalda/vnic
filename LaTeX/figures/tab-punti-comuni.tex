@@ -1,0 +1,23 @@
+\begin{table}[H]
+    \centering
+    \footnotesize
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.7cm}>{\raggedright\arraybackslash}p{5.1cm}>{\raggedright\arraybackslash}p{5.1cm}@{}}
+        \toprule
+        \textbf{SmartNIC} & \textbf{eBPF} & \textbf{P4} \\
+        \midrule
+        ricezione da più porte e code (RSS) & presente: \texttt{ingress\_ifindex} e \texttt{rx\_queue\_index} indicano porta e coda di arrivo & assente \\
+        \addlinespace
+        analisi degli header (parsing) & presente: controllo in C sulla lunghezza prima di ogni lettura (richiesto dal verifier) & presente: blocco dichiarativo \texttt{parser} con \texttt{extract} e \texttt{select} \\
+        \addlinespace
+        classificazione dei pacchetti con tabelle e stato & presente: mappe BPF, accessibili anche dallo spazio utente & presente: tabelle match-action tradotte in mappe BPF \\
+        \addlinespace
+        drop del pacchetto o consegna all'host & presente: \texttt{XDP\_DROP} e \texttt{XDP\_PASS} & presente: parametro booleano di uscita false o true \\
+        \addlinespace
+        rinvio sulla porta di arrivo o redirezione su altra porta del pacchetto & presente: \texttt{XDP\_TX} e \texttt{XDP\_REDIRECT} & assente \\
+        \addlinespace
+        modifica del pacchetto & presente & assente \\
+        \bottomrule
+    \end{tabular}
+    \caption{Operazioni di una SmartNIC e come si esprimono in eBPF e in P4}
+    \label{tab:punti-comuni}
+\end{table}

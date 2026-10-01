@@ -1,0 +1,9 @@
+\begin{tabular}{@{}lllll@{}}
+    \toprule
+    \textbf{Programma} & \textbf{Porta} & \textbf{Risposta} & \textbf{Su \texttt{tap0}} & \textbf{Su \texttt{tap1}} \\
+    \midrule
+    nessuno & 8080 & RST & SYN e RST & SYN e RST \\
+    \texttt{tcp-port-filter} & 9090 & RST & SYN e RST & SYN e RST \\
+    \texttt{tcp-port-filter} & 8080 & nessuna & SYN & -- \\
+    \bottomrule
+\end{tabular}

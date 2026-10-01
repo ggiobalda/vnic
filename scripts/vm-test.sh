@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Script per automatizzare il test manuale descritto in VM-test.md
+# vm-test.sh - script per automatizzare il test manuale descritto in VM-test.md
 # 
 # Lo scopo di questo script è poi essere tradotto comando per comando
 # in main.rs, solo che effettuare modifiche prima sullo script è più
@@ -14,9 +14,7 @@
 #
 # Differenze con vnic saranno:
 # - codice eBPF caricato dall'utente, mentre qui se ne usa uno di test
-# - aggiunta di compatibilità con codice P4, che vnic traducerà in eBPF
-# - rimozione dei bridge, il cui lavoro di inoltro viene fatto
-#   direttamente dal daemon vnic
+# - aggiunta di compatibilità con codice P4, che vnic tradurrà in eBPF
 
 # stop su errori (-e), variabili non definite (-u) o errori nelle pipe (-o pipefail)
 set -euo pipefail

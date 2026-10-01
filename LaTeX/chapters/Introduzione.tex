@@ -1,0 +1,29 @@
+\chapter{Introduzione}\label{ch:introduzione}
+
+\section{Contesto e motivazioni}\label{sec:contesto}
+
+Nei data center moderni, in forte crescita anche per la diffusione dell'intelligenza artificiale, elaborare il traffico di rete occupa una parte importante delle risorse dei server, soprattutto quando le velocità di trasmissione richieste sono molto elevate, nell'ordine delle decine di Gbit/s. 
+Per questo funzioni come il filtraggio dei pacchetti in arrivo, il bilanciamento del carico e la gestione delle reti virtuali vengono spostate su schede di rete particolari, le SmartNIC, che possono essere programmate per eseguirle al posto della CPU dell'host~\cite{nvidia-smartnic}.
+
+Le SmartNIC vanno quindi programmate in base alle esigenze del data center, e per farlo esistono più strade. Una è l'offload di programmi XDP (eXpress Data Path), cioè programmi scritti in eBPF che il kernel Linux esegue su ogni pacchetto ricevuto e che alcune schede sono in grado di eseguire al posto del kernel~\cite{cilium-bpf}. Un altro linguaggio usato è P4, nato per programmare il piano dati dei dispositivi di rete. Entrambi sono descritti nel capitolo~\ref{ch:background}.
+
+Per provare questi programmi, però, serve una SmartNIC, che è costosa e difficile da reperire per molti sviluppatori e studenti. Da qui nasce vnic, un tool a riga di comando che emula una SmartNIC, così che chi sviluppa un programma possa testarne il comportamento in locale, prima di caricarlo sulla scheda vera e propria. Il test riguarda la logica del programma e non le sue prestazioni, che nell'emulazione non sono rappresentative.
+
+In vnic la scheda è rappresentata da una macchina virtuale (VM), sulla cui interfaccia d'ingresso viene caricato il programma dell'utente, scritto in eBPF o in P4. Due network namespace simulano invece la rete esterna, da cui arrivano i pacchetti, e il server che monta la scheda, che riceve solo quelli lasciati passare dal programma. Lo schema completo è mostrato nella figura~\ref{fig:architettura} del capitolo~\ref{ch:architettura}.
+
+\section{Obiettivi}\label{sec:obiettivi}
+
+Gli obiettivi di questa tesi sono tre: eseguire programmi eBPF e P4 come su una SmartNIC, verificarne il comportamento con traffico di rete controllato e infine capire che cosa l'emulazione rappresenta fedelmente e quanto costa in termini di latenza e throughput.
+
+Per raggiungerli sono stati sviluppati:
+\begin{itemize}
+    \item \texttt{vnic.sh}, lo script principale, che crea la topologia di rete, avvia la VM e vi carica il programma eBPF o P4 dell'utente;
+    \item \texttt{p4c-container.sh}, che esegue il compilatore P4 in un container, così che l'utente non debba installarlo;
+    \item \texttt{traffic.sh}, che invia pacchetti con i campi scelti dall'utente, per verificare come si comporta il programma caricato;
+    \item due esempi in \texttt{examples/}, ciascuno in eBPF e in P4, che mostrano come usare il tool e il cui comportamento è controllato in automatico da uno script \texttt{verify.sh};
+    \item \texttt{bench.sh}, che misura la latenza e il throughput di vnic.
+\end{itemize}
+
+\section{Struttura della tesi}\label{sec:struttura}
+
+Il capitolo~\ref{ch:background} introduce i concetti e gli strumenti su cui si basa vnic, cioè le SmartNIC, eBPF, XDP, P4 e i componenti di Linux usati per la virtualizzazione. Il capitolo~\ref{ch:architettura} descrive il modello di SmartNIC emulato, la topologia di rete che vnic crea e il comportamento atteso della VM per ciascuna azione XDP. Il capitolo~\ref{ch:implementazione} spiega come è stato realizzato il tool, dalla compilazione dei programmi alla preparazione della VM, fino alla generazione del traffico di prova. Il capitolo~\ref{ch:casouso} mostra vnic dal punto di vista dell'utente, con una demo da terminale e la verifica automatica degli esempi. Il capitolo~\ref{ch:valutazione} valuta il costo dell'emulazione in latenza e throughput, ne riassume i limiti e chiude la tesi con le conclusioni e alcuni sviluppi futuri.

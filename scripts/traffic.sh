@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# traffic.sh — generazione di traffico di prova per vnic
+# traffic.sh - generazione di traffico di prova per vnic
 #
 # Invia pacchetti da ns0 verso ns1, attraverso la VM
 # creata da 'vnic.sh up'.
