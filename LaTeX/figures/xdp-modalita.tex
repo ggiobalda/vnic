@@ -1,0 +1,33 @@
+\begin{tikzpicture}[
+    font=\footnotesize,
+    stage/.style={draw, rounded corners=2pt, fill=white, minimum height=9mm, text width=19mm, align=center},
+    hook/.style={draw=orange!70!black, fill=orange!25, very thick, rounded corners=2pt, align=center, inner sep=3pt},
+    zone/.style={draw, rounded corners=4pt},
+    lbl/.style={font=\scriptsize\bfseries, inner sep=3pt},
+    pkt/.style={-{Stealth[length=2.2mm]}, thick},
+]
+    \node[stage] (nic)   at (0,0)    {Scheda\\di rete};
+    \node[stage] (drv)   at (2.9,0)  {Driver};
+    \node[stage] (skb)   at (5.8,0)  {Allocazione\\\texttt{sk\_buff}};
+    \node[stage] (tc)    at (8.7,0)  {TC};
+    \node[stage] (stack) at (11.6,0) {Stack\\di rete};
+    \draw[pkt] (nic) -- (drv);
+    \draw[pkt] (drv) -- (skb);
+    \draw[pkt] (skb) -- coordinate[pos=0.5] (gen) (tc);
+    \draw[pkt] (tc) -- (stack);
+
+    \node[hook, above=5mm of nic] (hoff) {offload};
+    \node[hook, above=5mm of drv] (hdrv) {nativa};
+    \node[hook] (hgen) at (gen |- hdrv) {generica};
+    \draw[orange!70!black, thick] (hoff) -- (nic);
+    \draw[orange!70!black, thick] (hdrv) -- (drv);
+    \draw[orange!70!black, thick] (hgen) -- (gen);
+    \fill[orange!70!black] (gen) circle (1.6pt);
+
+    \begin{scope}[on background layer]
+        \node[zone, fill=gray!12, fit=(nic)(hoff), inner sep=2.5mm] (hw) {};
+        \node[zone, dashed, fill=blue!4, fit=(drv)(hdrv)(hgen)(stack), inner sep=2.5mm] (kern) {};
+    \end{scope}
+    \node[lbl, anchor=north] at (hw.south) {scheda};
+    \node[lbl, anchor=north] at (kern.south) {kernel dell'host};
+\end{tikzpicture}

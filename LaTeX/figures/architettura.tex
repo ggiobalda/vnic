@@ -1,7 +1,3 @@
-% Schema della topologia di vnic, da includere con \input{figures/architettura}
-% dentro un ambiente figure. Nomi e indirizzi presi da scripts/vnic.sh.
-% Le frecce indicano il verso ns0 -> ns1, l'unico che passa dal programma XDP
-% (le risposte fanno il percorso inverso ed entrano nella VM da ens4, senza programma).
 \begin{tikzpicture}[
     font=\small,
     iface/.style={draw, rounded corners=2pt, fill=white, minimum height=7mm, minimum width=15mm},
@@ -9,51 +5,44 @@
     zone/.style={draw, rounded corners=4pt},
     lbl/.style={font=\footnotesize\bfseries, anchor=north west, inner sep=3pt},
     note/.style={font=\scriptsize, text=black!70},
-    pkt/.style={-{Stealth[length=2.2mm]}, thick},
+    tubo/.style={draw=black!60, line width=0.7pt, double=gray!30, double distance=4pt},
+    bridge/.style={draw=blue!55!black, line width=1.5pt},
+    nomebr/.style={font=\footnotesize\bfseries, text=blue!55!black, above, inner sep=2pt},
+    qemu/.style={draw=black!70, thick},
 ]
-    % ---- VM (SmartNIC emulata)
-    \node[xdp]   (ens3) at (3.2, 3.9) {ens3};
-    \node[iface] (brvm) at (6.0, 3.9) {brVM};
-    \node[iface] (ens4) at (8.8, 3.9) {ens4};
+    \node[xdp]   (ens3) at (3.2, 3.4) {ens3};
+    \node[iface] (ens4) at (8.8, 3.4) {ens4};
     \node[note, above=0.5mm of ens3, text=orange!50!black] {programma XDP};
+    \draw[bridge] (ens3) -- node[nomebr] {brVM} (ens4);
     \begin{scope}[on background layer]
-        \node[zone, fill=gray!12, fit=(ens3)(brvm)(ens4), inner xsep=8mm, inner ysep=7mm] (vm) {};
+        \node[zone, fill=gray!12, fit=(ens3)(ens4), inner xsep=8mm, inner ysep=7mm] (vm) {};
     \end{scope}
-    \node[lbl, anchor=south west] at (vm.north west) {VM QEMU/KVM (SmartNIC emulata)};
+    \node[lbl, anchor=south west] at (vm.north west) {VM QEMU/KVM};
 
-    % ---- host
+    \node[iface] (vb0)  at (0.2, 1.0) {veth0-br};
     \node[iface] (tap0) at (3.2, 1.0) {tap0};
-    \node[iface] (br0)  at (0.6, 1.0) {br0};
-    \node[iface] (vb0)  at (0.6,-0.6) {veth0-br};
     \node[iface] (tap1) at (8.8, 1.0) {tap1};
-    \node[iface] (br1)  at (11.4,1.0) {br1};
-    \node[iface] (vb1)  at (11.4,-0.6) {veth1-br};
+    \node[iface] (vb1)  at (11.8,1.0) {veth1-br};
+    \draw[bridge] (vb0) -- node[nomebr] {br0} (tap0);
+    \draw[bridge] (tap1) -- node[nomebr] {br1} (vb1);
     \begin{scope}[on background layer]
-        \node[zone, dashed, fill=blue!4, fit=(br0)(tap0)(vb0)(tap1)(br1)(vb1), inner sep=3mm] (host) {};
+        \node[zone, dashed, fill=blue!4, fit=(vb0)(tap0)(tap1)(vb1), inner sep=3mm] (host) {};
     \end{scope}
     \node[lbl, anchor=south] at (host.south) {host};
 
-    % ---- namespace
-    \node[iface] (v0) at (0.6,-2.9) {veth0};
-    \node[iface] (v1) at (11.4,-2.9) {veth1};
+    \node[iface] (v0) at (0.2,-1.9) {veth0};
+    \node[iface] (v1) at (11.8,-1.9) {veth1};
     \begin{scope}[on background layer]
-        \node[zone, fill=green!10, fit=(v0), inner xsep=3mm, inner ysep=5mm] (ns0) {};
-        \node[zone, fill=green!10, fit=(v1), inner xsep=3mm, inner ysep=5mm] (ns1) {};
+        \node[zone, fill=green!10, fit=(v0), inner xsep=6mm, inner ysep=5mm] (ns0) {};
+        \node[zone, fill=green!10, fit=(v1), inner xsep=6mm, inner ysep=5mm] (ns1) {};
     \end{scope}
     \node[lbl] at (ns0.north west) {ns0};
     \node[lbl] at (ns1.north west) {ns1};
     \node[note, below=0.5mm of ns0] {192.168.100.1};
     \node[note, below=0.5mm of ns1] {192.168.100.2};
 
-    % ---- collegamenti, orientati nel verso ns0 -> ns1
-    \draw[pkt] (v0) -- node[note, right] {veth pair} (vb0);
-    \draw[pkt] (vb0) -- (br0);
-    \draw[pkt] (br0) -- (tap0);
-    \draw[pkt] (tap0) -- node[note, left] {virtio-net} (ens3);
-    \draw[pkt] (ens3) -- (brvm);
-    \draw[pkt] (brvm) -- (ens4);
-    \draw[pkt] (ens4) -- node[note, right] {virtio-net} (tap1);
-    \draw[pkt] (tap1) -- (br1);
-    \draw[pkt] (br1) -- (vb1);
-    \draw[pkt] (vb1) -- node[note, left] {veth pair} (v1);
+    \draw[tubo] (v0) -- node[note, right=2mm] {veth pair} (vb0);
+    \draw[tubo] (v1) -- node[note, left=2mm] {veth pair} (vb1);
+    \draw[qemu] (tap0) -- node[note, left] {virtio-net} (ens3);
+    \draw[qemu] (tap1) -- node[note, right] {virtio-net} (ens4);
 \end{tikzpicture}

@@ -1,68 +1,57 @@
 \chapter{Architettura}\label{ch:architettura}
 
-Questo capitolo descrive che cosa emula vnic e con quale modello: la corrispondenza tra gli elementi di una SmartNIC e quelli del tool (sezione~\ref{sec:modello}), la topologia di rete che vnic crea (sezione~\ref{sec:topologia}), il comportamento atteso della VM per ciascuna azione XDP e i modi per osservarlo (sezione~\ref{sec:azioni-xdp}), e infine le operazioni di una SmartNIC, come si esprimono in eBPF e in P4 e quali sono implementate in vnic (sezione~\ref{sec:punti-comuni}).
+Per eseguire un programma XDP come su una SmartNIC, vnic ne riproduce in software gli elementi principali. La sezione~\ref{sec:modello} descrive questa corrispondenza e la sezione~\ref{sec:topologia} la topologia di rete che ne deriva. La sezione~\ref{sec:azioni-xdp} mostra poi cosa fa la VM con ciascuna azione XDP e come osservarlo, mentre la sezione~\ref{sec:punti-comuni} confronta le operazioni di una SmartNIC con quello che si può esprimere in eBPF e in P4 e con quello che vnic implementa.
 
 \section{Modello: NIC con offload XDP}\label{sec:modello}
 
-Tra le varie funzionalità delle SmartNIC, vnic emula in particolare l'offload di programmi XDP, cioè la possibilità di eseguire sulla scheda un programma eBPF che elabora i pacchetti in ricezione. Nel resto della tesi, con SmartNIC si intende quindi una scheda con questa funzionalità.
+Tra le varie funzionalità delle SmartNIC, vnic emula in particolare l'offload di programmi XDP descritto nella sezione~\ref{sec:smartnic}. Nel resto della tesi, con SmartNIC si intende quindi una scheda con questa funzionalità.
 
-La SmartNIC vera e propria è rappresentata da una macchina virtuale Debian (indicata d'ora in poi come VM). La porta di rete della scheda corrisponde all'interfaccia \texttt{ens3} della VM, mentre il collegamento con l'host, che in una scheda reale è il bus PCIe verso il server, è rappresentato dall'interfaccia \texttt{ens4}. Il percorso interno alla scheda, dalla porta di rete verso l'host, è rappresentato dal bridge software \texttt{brVM}, che collega le due interfacce. Il programma offloaded, che sulla scheda reale elabora i pacchetti appena arrivano dalla rete, viene caricato su \texttt{ens3}, dove per ogni pacchetto decide cosa farne. Se lo lascia passare, il pacchetto raggiunge l'host attraverso \texttt{ens4}. Infine la rete esterna e il server che monta la scheda sono simulati da due network namespace: \texttt{ns0}, che invia pacchetti verso \texttt{ens3}, e \texttt{ns1}, che riceve da \texttt{ens4} i pacchetti filtrati.
+La scheda è rappresentata da una VM Debian. La porta di rete della scheda corrisponde all'interfaccia \texttt{ens3} della VM, mentre il collegamento con l'host, che in una scheda reale è il bus PCIe verso il server, è rappresentato dall'interfaccia \texttt{ens4}. Il percorso interno alla scheda, dalla porta di rete verso l'host, è rappresentato dal bridge software \texttt{brVM}, che collega le due interfacce. Il programma XDP, che sulla scheda reale elabora i pacchetti appena arrivano dalla rete, viene caricato su \texttt{ens3}, dove per ogni pacchetto decide cosa farne. Se lo lascia passare, il pacchetto raggiunge l'host attraverso \texttt{ens4}. Infine la rete esterna e il server che monta la scheda sono simulati da due network namespace: \texttt{ns0}, che invia pacchetti verso \texttt{ens3}, e \texttt{ns1}, che riceve da \texttt{ens4} i pacchetti filtrati.
 
-Il modello è semplice perché serve solo a testare programmi XDP come se fossero caricati su una vera SmartNIC. Dal suo utilizzo non è quindi possibile trarre conclusioni sulle prestazioni di una vera SmartNIC né sulle sue funzionalità di offload hardware, come il calcolo dei checksum o la segmentazione dei pacchetti TCP, che nell'emulazione vengono anzi disattivate quando si carica un programma XDP (capitolo~\ref{ch:valutazione}). La tabella~\ref{tab:modello} riassume la corrispondenza.
+Il modello è semplice perché serve solo a testare programmi XDP come se fossero caricati su una SmartNIC. Dal suo utilizzo non è quindi possibile trarre conclusioni sulle prestazioni di una vera SmartNIC né sulle sue funzionalità di offload hardware, come il calcolo dei checksum o la segmentazione dei pacchetti TCP. La tabella~\ref{tab:modello} riassume la corrispondenza.
 
 \begin{table}[H]
     \centering
+    \input{figures/tab-smartnic-vnic}
     \caption{Corrispondenza tra gli elementi di una SmartNIC e quelli di vnic}
     \label{tab:modello}
-    \begin{tabular}{@{}ll@{}}
-        \toprule
-        \textbf{SmartNIC} & \textbf{vnic} \\
-        \midrule
-        scheda di rete & VM QEMU/KVM \\
-        porta di rete & \texttt{ens3} \\
-        programma XDP eseguito sulla scheda & programma caricato su \texttt{ens3} \\
-        percorso interno e collegamento con l'host & \texttt{brVM} e \texttt{ens4} \\
-        rete esterna & namespace \texttt{ns0} \\
-        server che monta la scheda & namespace \texttt{ns1} \\
-        \bottomrule
-    \end{tabular}
 \end{table}
 
 \section{Topologia}\label{sec:topologia}
 
 La topologia di rete è visibile nella figura~\ref{fig:architettura}.
 
-\begin{figure}[htb]
+\begin{figure}[H]
     \centering
     \input{figures/architettura}
     \caption{Topologia creata da vnic: la VM emula una SmartNIC con un programma XDP in ingresso}
     \label{fig:architettura}
 \end{figure}
 
-Un pacchetto viene inviato dal namespace \texttt{ns0} attraverso l'interfaccia \texttt{veth0}, con indirizzo IP 192.168.100.1/24. Questa fa parte di una veth pair, cioè una coppia di interfacce virtuali collegate tra loro come da un cavo, il cui altro capo, \texttt{veth0-br}, si trova nel namespace di default, quello dell'host. Qui il bridge software \texttt{br0} collega \texttt{veth0-br} all'interfaccia TAP \texttt{tap0}. Una TAP è un'interfaccia virtuale il cui altro capo non è un cavo ma un programma in spazio utente, in questo caso QEMU, che legge i frame trasmessi dall'host su \texttt{tap0} e li consegna alla scheda di rete virtio-net emulata, vista dalla VM come \texttt{ens3}. Su \texttt{ens3} è stato caricato al boot il programma XDP, che elabora il pacchetto prima che entri nello stack di rete della VM. Se il programma lo lascia passare, il pacchetto raggiunge il bridge \texttt{brVM}, anch'esso creato al boot, che lo inoltra all'altra interfaccia della VM, \texttt{ens4}. Le altre azioni possibili sono descritte nella sezione~\ref{sec:azioni-xdp}.
+Un pacchetto viene inviato dal namespace \texttt{ns0} attraverso l'interfaccia \texttt{veth0}, con indirizzo IP 192.168.100.1/24. Questa fa parte di una veth pair il cui altro capo, \texttt{veth0-br}, si trova nel namespace di default, quello dell'host. Qui il bridge software \texttt{br0} collega \texttt{veth0-br} all'interfaccia TAP \texttt{tap0}, da cui QEMU legge i frame trasmessi dall'host per consegnarli alla scheda di rete virtio-net emulata, vista dalla VM come \texttt{ens3}. Su \texttt{ens3} è stato caricato al boot il programma XDP, che elabora il pacchetto prima che entri nello stack di rete della VM. Se il programma lo lascia passare, il pacchetto raggiunge il bridge \texttt{brVM}, anch'esso creato al boot, che lo inoltra all'altra interfaccia della VM, \texttt{ens4}. Le altre azioni possibili sono descritte nella sezione~\ref{sec:azioni-xdp}.
 
 Da qui il percorso è speculare a quello visto finora. QEMU scrive su \texttt{tap1} i frame trasmessi da \texttt{ens4}, e il bridge \texttt{br1} e la veth pair formata da \texttt{veth1-br} e \texttt{veth1}, con indirizzo IP 192.168.100.2/24, li portano nel namespace \texttt{ns1}.
 
-I tre bridge (\texttt{br0}, \texttt{brVM} e \texttt{br1}) lavorano a livello 2 dello stack di rete e inoltrano i frame in base al MAC di destinazione, che è quello di \texttt{veth1}. Per \texttt{ns0} e \texttt{ns1} è quindi come essere collegati direttamente da un cavo, e infatti i loro indirizzi appartengono alla stessa sottorete. Anche i MAC delle interfacce della VM, che vnic fissa a \texttt{52:54:00:12:34:56} per \texttt{ens3} e a \texttt{52:54:00:12:34:57} per \texttt{ens4} (con il prefisso usato per convenzione da QEMU), non intervengono nell'inoltro.
+I tre bridge (\texttt{br0}, \texttt{brVM} e \texttt{br1}) inoltrano i frame in base al MAC di destinazione, che è quello di \texttt{veth1}. Per \texttt{ns0} e \texttt{ns1} è quindi come essere collegati direttamente da un cavo, e infatti i loro indirizzi appartengono alla stessa sottorete. Nemmeno i MAC delle interfacce della VM, che vnic fissa a \texttt{52:54:00:12:34:56} per \texttt{ens3} e a \texttt{52:54:00:12:34:57} per \texttt{ens4} (con il prefisso usato per convenzione da QEMU), intervengono nell'inoltro.
 
 Poiché XDP agisce solo sui pacchetti in ingresso, il programma viene eseguito soltanto nel verso da \texttt{ns0} a \texttt{ns1}. Il traffico di ritorno, per esempio le risposte ai ping, entra nella VM da \texttt{ens4}, dove non è caricato alcun programma, e raggiunge \texttt{ns0} senza essere filtrato.
 
 \section{Azioni XDP nella VM}\label{sec:azioni-xdp}
 
-Per capire cosa succede nella VM con ciascuna azione XDP è stato utilizzato un semplice programma eBPF di prova, \texttt{xdp\_actions.c}, che sceglie l'azione in base alla porta UDP di destinazione. Da \texttt{ns0} sono stati inviati 5 pacchetti per ciascuna porta, osservando cosa accade dentro e fuori dalla VM con i metodi descritti di seguito.
+Per capire cosa succede nella VM con ciascuna azione XDP è stato utilizzato un semplice programma eBPF di prova, \texttt{xdp\_actions.c}, che sceglie l'azione in base alla porta UDP di destinazione, cioè ABORTED per la 9000, DROP per la 9001, PASS per la 9002, TX per la 9003 (dopo aver scambiato i MAC di sorgente e destinazione) e REDIRECT verso \texttt{ens4} per la 9004. Da \texttt{ns0} sono stati inviati 5 pacchetti per ciascuna porta, osservando cosa accade dentro e fuori dalla VM con i metodi descritti di seguito.
 
 Per contare i pacchetti per ogni azione esistono 3 modi:
 \begin{enumerate}
     \item direttamente nel programma XDP, con una mappa \texttt{BPF\_MAP\_TYPE\_PERCPU\_ARRAY} indicizzata per azione~\cite{xdp-tutorial}. Questo metodo è il più completo, perché è il programma stesso a sapere quale azione restituisce, per cui distingue tutte e 5 le azioni e volendo può contarle anche per porta o per flusso. Richiede però uno strumento per leggere la mappa, come \texttt{bpftool}, che nella VM di vnic non è presente;
     \item nel driver della VM, con i contatori mostrati da \texttt{ethtool -S ens3} e con i tracepoint \texttt{xdp:*} del kernel. TX e REDIRECT hanno un contatore dedicato, mentre DROP e ABORTED finiscono nello stesso contatore (\texttt{xdp\_drops}) e li distingue solo il tracepoint \texttt{xdp\_exception}, emesso per ABORTED. PASS non ha un contatore suo e si ricava per differenza dal totale dei pacchetti elaborati;
-    \item esternamente alla VM, con \texttt{tcpdump} sulle interfacce \texttt{tap0} e \texttt{tap1}. Da qui ogni azione lascia una traccia diversa: con PASS il pacchetto esce da \texttt{tap1} verso \texttt{ns1}; con TX torna indietro su \texttt{tap0} verso \texttt{ns0}; con REDIRECT verso \texttt{ens4} esce anch'esso da \texttt{tap1}, perché salta \texttt{brVM} ma arriva comunque a \texttt{ens4}; con DROP e ABORTED entra da \texttt{tap0} e non esce più da nessuna parte. Dall'esterno, quindi, DROP e ABORTED sono indistinguibili, e lo stesso vale per PASS e REDIRECT riuscito.
+    \item esternamente alla VM, con \texttt{tcpdump} sulle interfacce \texttt{tap0} e \texttt{tap1}. Da qui si vede dove finisce il pacchetto: con PASS il pacchetto esce da \texttt{tap1} verso \texttt{ns1}; con TX torna indietro su \texttt{tap0} verso \texttt{ns0}; con REDIRECT verso \texttt{ens4} esce anch'esso da \texttt{tap1}, perché salta \texttt{brVM} ma arriva comunque a \texttt{ens4}; con DROP e ABORTED entra da \texttt{tap0} e non esce più da nessuna parte. Dall'esterno, quindi, DROP e ABORTED sono indistinguibili, e lo stesso vale per PASS e REDIRECT riuscito.
 \end{enumerate}
 
-In vnic è possibile utilizzare direttamente il terzo metodo, ed è proprio quello che fa lo script \texttt{verify.sh} nei due esempi. Va notato che questo è anche l'unico metodo disponibile con una SmartNIC reale, se dall'host non si hanno gli strumenti del produttore.
+In vnic il terzo metodo si può usare direttamente, ed è quello che fa lo script \texttt{verify.sh} nei due esempi. Va notato che è anche l'unico che non richiede di modificare il programma né di accedere alla scheda, per cui funziona allo stesso modo con una SmartNIC reale.
 
-Per l'esperimento, oltre al terzo metodo, è stato usato anche il secondo, così da confrontare ciò che si vede dall'esterno con ciò che registra il driver. A questo scopo è stata usata una copia di vnic modificata, che aggiunge le seguenti funzionalità:
+Per l'esperimento, oltre al terzo metodo, è stato usato anche il secondo, così da confrontare ciò che si vede dall'esterno con ciò che registra il driver. A questo scopo è stata creata una copia di vnic modificata, che aggiunge le seguenti funzionalità:
 \begin{itemize}
-    \item attivazione dei tracepoint \texttt{xdp:*}, che il kernel emette per esempio quando un programma restituisce ABORTED o quando una redirect fallisce;
+    \item attivazione dei tracepoint \texttt{xdp:*}, che il kernel emette per esempio quando un programma restituisce ABORTED o quando un REDIRECT fallisce;
     \item stampa ogni secondo dell'output di \texttt{ethtool -S ens3} ed \texttt{ethtool -S ens4}, insieme ai tracepoint, sulla console seriale della VM, che QEMU salva in un file di log sull'host.
 \end{itemize}
 
@@ -84,7 +73,7 @@ Dalla tabella si vede che PASS, anche se è l'azione più comune, è l'unica a n
 
 \section{Operazioni di una SmartNIC in eBPF, P4 e vnic}\label{sec:punti-comuni}
 
-Il modello di elaborazione di una SmartNIC è lo stesso, indipendentemente dal linguaggio utilizzato. Per ogni pacchetto se ne analizzano gli header, si prende una decisione, eventualmente consultando tabelle o uno stato, e infine si applica un'azione, come scartarlo, consegnarlo all'host o inoltrarlo altrove. P4 è nato proprio per programmare questo tipo di elaborazione su hardware di rete~\cite{bosshart2014p4}, mentre un programma XDP può essere eseguito sia dal driver sia, con l'offload, direttamente dalla scheda~\cite{kicinski2016offload}. Il compilatore \texttt{p4c-ebpf} traduce un programma P4 in un programma eBPF, per cui in vnic entrambi i linguaggi diventano un programma XDP caricato su \texttt{ens3}.
+Il modello di elaborazione di una SmartNIC è lo stesso, indipendentemente dal linguaggio utilizzato. Per ogni pacchetto se ne analizzano gli header, si prende una decisione, eventualmente consultando tabelle o uno stato, e infine si applica un'azione, come scartarlo, consegnarlo all'host o inoltrarlo altrove. Sia eBPF sia P4 permettono di descrivere questa elaborazione, e in vnic entrambi diventano un programma XDP caricato su \texttt{ens3}, perché \texttt{p4c-ebpf} traduce il programma P4 in eBPF.
 
 La tabella~\ref{tab:punti-comuni} elenca le principali operazioni che una SmartNIC può svolgere su un pacchetto e, per ciascuna, se e come la si può esprimere in eBPF e in P4, usando per quest'ultimo il modello \texttt{ebpfFilter} di \texttt{p4c-ebpf}.
 
@@ -92,10 +81,10 @@ La tabella~\ref{tab:punti-comuni} elenca le principali operazioni che una SmartN
 
 Quindi eBPF può esprimere tutte le operazioni della tabella, mentre P4 con il modello \texttt{ebpfFilter} può solo analizzare il pacchetto e decidere se accettarlo o scartarlo, senza poterlo modificare, rimandare indietro o inoltrare altrove. Il vantaggio è che in P4 il parsing e le tabelle si scrivono in modo dichiarativo, senza gestire a mano i controlli sulla lunghezza del pacchetto.
 
-Di queste operazioni vnic modella l'elaborazione del programma sulla porta di ingresso. Con entrambi i linguaggi il parsing e la decisione avvengono come su una SmartNIC reale. Con eBPF sono disponibili tutte le azioni, con il limite già visto per REDIRECT verso \texttt{ens4}; con P4, invece, solo quelle consentite dal modello \texttt{ebpfFilter}.
+Di queste operazioni vnic modella l'elaborazione del programma sulla porta di ingresso. Con entrambi i linguaggi il parsing e la decisione avvengono come su una SmartNIC reale. In eBPF sono disponibili tutte le azioni, con il limite già visto per REDIRECT verso \texttt{ens4}; in P4, invece, solo quelle consentite dal modello \texttt{ebpfFilter}.
 
 Alcuni aspetti, invece, non sono modellati. Il primo sono le code di ricezione. Una scheda reale ha più code e distribuisce i pacchetti tra i core con l'RSS, e il programma XDP può sapere da quale coda arriva ogni pacchetto. In vnic ogni interfaccia virtio ha una sola coda (lo mostra \texttt{ethtool -l ens3}), quindi \texttt{rx\_queue\_index} vale sempre 0 e il programma non può fare scelte in base alla coda.
 
 Manca inoltre un piano di controllo. Le mappe e le tabelle vengono create quando il programma è caricato, ma dall'host non è possibile leggerle né modificarle. Per esempio, non si possono consultare dei contatori o aggiungere regole a una tabella mentre il programma è in esecuzione.
 
-Infine vnic non modella gli offload hardware, come il calcolo dei checksum o la segmentazione dei pacchetti TCP, che su una SmartNIC reale restano attivi insieme al programma. XDP deve vedere i singoli frame così come arrivano dalla rete, mentre con gli offload di ricezione attivi QEMU consegna alla VM pacchetti già aggregati. Per questo, quando si carica un programma XDP, il driver \texttt{virtio\_net} disattiva automaticamente questi offload; se il dispositivo non permette di disattivarli, rifiuta il programma con l'errore ``Can't set XDP while host is implementing GRO\_HW/CSUM''. Questo spiega anche il calo di throughput misurato nel capitolo~\ref{ch:valutazione}.
+Infine vnic non modella gli offload hardware, che su una SmartNIC reale restano attivi insieme al programma. XDP deve vedere i singoli frame così come arrivano dalla rete, mentre con gli offload di ricezione attivi QEMU consegna alla VM pacchetti già aggregati. Per questo, quando si carica un programma XDP, il driver \texttt{virtio\_net} disattiva automaticamente questi offload; se il dispositivo non permette di disattivarli, rifiuta il programma con l'errore ``Can't set XDP while host is implementing GRO\_HW/CSUM, disable GRO\_HW/CSUM first''. Questo spiega anche il calo di throughput misurato nel capitolo~\ref{ch:valutazione}.

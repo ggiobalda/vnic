@@ -1,9 +1,6 @@
-% Evoluzione dal test manuale (docs/VM-test.md) a vm-test.sh e vnic.sh (sezione 4.1).
 \begin{table}[H]
     \centering
     \footnotesize
-    \caption{Come sono cambiati i principali aspetti dal test manuale a \texttt{vnic.sh}}
-    \label{tab:evoluzione}
     \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{3.7cm}>{\raggedright\arraybackslash}p{3.7cm}>{\raggedright\arraybackslash}p{3.7cm}@{}}
         \toprule
         \textbf{Aspetto} & \textbf{Test manuale} & \textbf{\texttt{vm-test.sh}} & \textbf{\texttt{vnic.sh}} \\
@@ -21,4 +18,6 @@
         verifica & \texttt{tcpdump}, \texttt{ping} e \texttt{nc} a mano & comando \texttt{run}, con esito PASS o FAIL & separata dal tool: \texttt{traffic.sh} e \texttt{verify.sh} degli esempi \\
         \bottomrule
     \end{tabular}
+    \caption{Come sono cambiati i principali aspetti dal test manuale a \texttt{vnic.sh}}
+    \label{tab:evoluzione}
 \end{table}

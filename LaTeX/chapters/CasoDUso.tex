@@ -1,8 +1,8 @@
 \chapter{Caso d'uso}\label{ch:casouso}
 
-Questo capitolo mostra vnic dal punto di vista dell'utente con una demo via terminale. La sezione~\ref{sec:scenario} presenta lo scenario del caso d'uso e il comportamento atteso, la sezione~\ref{sec:interfaccia} la CLI (interfaccia a riga di comando), la sezione~\ref{sec:demo} la demo vera e propria, la sezione~\ref{sec:errori} la risposta del tool agli input errati e infine la sezione~\ref{sec:verifica} la verifica automatica degli esempi.
+Visto come è realizzato, vnic può ora essere provato dal punto di vista dell'utente. Lo scenario e il comportamento atteso sono descritti nella sezione~\ref{sec:scenario} e la CLI (interfaccia a riga di comando) nella sezione~\ref{sec:interfaccia}. La sezione~\ref{sec:demo} contiene la demo da terminale, mentre le sezioni~\ref{sec:errori} e~\ref{sec:verifica} mostrano come il tool risponde agli input errati e come si verificano in automatico gli esempi.
 
-Tutti i comandi sono eseguiti dalla radice della repository e gli output riportati sono quelli reali, a cui sono state tolte solo le righe indicate con \texttt{[...]}. Ripetendo gli stessi comandi si ottiene lo stesso output, eccetto i tempi (boot della VM, tempi di \texttt{nping}), i valori scelti a ogni esecuzione (PID di QEMU, porta sorgente e numeri di sequenza di \texttt{nping}) e il percorso del log, che dipende dalla posizione della repository.
+Tutti i comandi sono eseguiti dalla radice della repository e gli output riportati sono quelli reali, a cui sono state tolte solo le righe indicate con \texttt{[...]}. Ripetendo gli stessi comandi si ottiene lo stesso output, eccetto i tempi (boot della VM, \texttt{nping}), i valori scelti a ogni esecuzione (PID di QEMU, porta sorgente e numeri di sequenza di \texttt{nping}) e il percorso del log, che dipende dalla posizione della repository.
 
 \section{Scenario}\label{sec:scenario}
 
@@ -16,38 +16,20 @@ La tabella~\ref{tab:atteso} riassume il comportamento atteso per il traffico usa
 
 \begin{table}[htbp]
     \centering
+    \input{figures/tab-syn}
     \caption{Comportamento atteso per 3 SYN inviati da \texttt{ns0}}
     \label{tab:atteso}
-    \begin{tabular}{@{}lllll@{}}
-        \toprule
-        \textbf{Programma} & \textbf{Porta} & \textbf{Risposta} & \textbf{Su \texttt{tap0}} & \textbf{Su \texttt{tap1}} \\
-        \midrule
-        nessuno & 8080 & RST & SYN e RST & SYN e RST \\
-        \texttt{tcp-port-filter} & 9090 & RST & SYN e RST & SYN e RST \\
-        \texttt{tcp-port-filter} & 8080 & nessuna & SYN & -- \\
-        \bottomrule
-    \end{tabular}
 \end{table}
 
 \section{Interfaccia a riga di comando}\label{sec:interfaccia}
 
-L'utente utilizza lo script \texttt{vnic.sh} per gestire l'istanza e \texttt{traffic.sh} per generare il traffico. Entrambi seguono le convenzioni dei tool a riga di comando: il primo argomento indica il comando (in \texttt{traffic.sh}, il tipo di pacchetto) ed è seguito dalle opzioni, mentre \texttt{help} (o l'esecuzione senza argomenti) mostra la sintassi completa. La tabella~\ref{tab:interfaccia} riassume l'input e l'output di ciascun comando.
+L'utente utilizza lo script \texttt{vnic.sh} per gestire l'istanza e \texttt{traffic.sh} per generare il traffico. Entrambi seguono le convenzioni dei tool a riga di comando, per cui il primo argomento indica il comando (in \texttt{traffic.sh}, il tipo di pacchetto) ed è seguito dalle opzioni, mentre \texttt{help} (o l'esecuzione senza argomenti) mostra la sintassi completa. La tabella~\ref{tab:interfaccia} riassume l'input e l'output di ciascun comando.
 
-\begin{table}[htbp]
+\begin{table}[H]
     \centering
+    \input{figures/tab-inout-vnic}
     \caption{Input e output dei comandi di vnic}
     \label{tab:interfaccia}
-    \begin{tabular}{@{}l >{\raggedright\arraybackslash}p{0.37\linewidth} >{\raggedright\arraybackslash}p{0.37\linewidth}@{}}
-        \toprule
-        \textbf{Comando} & \textbf{Input} & \textbf{Output} \\
-        \midrule
-        \texttt{vnic.sh help} & -- & sintassi, opzioni, note ed esempi \\
-        \texttt{vnic.sh up} & nome dell'istanza; programma e \texttt{-y} facoltativi & fasi dell'avvio e riepilogo dell'istanza \\
-        \texttt{vnic.sh status} & -- & stato della VM, namespace e interfacce presenti \\
-        \texttt{vnic.sh down} & nome dell'istanza & arresto della VM e rimozione dell'infrastruttura \\
-        \texttt{traffic.sh} & tipo di pacchetto; campi degli header e numero di pacchetti facoltativi & comando \texttt{nping} eseguito, pacchetti inviati e risposte ricevute \\
-        \bottomrule
-    \end{tabular}
 \end{table}
 
 Il listing~\ref{lst:help} riporta la sintassi di \texttt{vnic.sh}.
@@ -90,7 +72,7 @@ Vedi examples/ per filtri di prova pronti all'uso, ciascuno con un proprio READM
 
 L'help di \texttt{traffic.sh} ha la stessa struttura, con i tipi di pacchetto e le opzioni descritti nella sezione~\ref{sec:traffico}.
 
-Ogni riga di output inizia con il nome dello script tra parentesi quadre, \texttt{[vnic]}, \texttt{[traffic]} o \texttt{[verify]}, così che si capisca sempre da dove proviene, anche quando uno script ne richiama un altro, come fa \texttt{verify.sh} con \texttt{vnic.sh}. Fanno eccezione solo le righe stampate da \texttt{nping}. I messaggi di errore iniziano invece con \texttt{errore:}, sono stampati sullo standard error e lo script termina con codice di uscita 1.
+Le righe stampate dagli script iniziano con il loro nome tra parentesi quadre, \texttt{[vnic]}, \texttt{[traffic]} o \texttt{[verify]}, così che si capisca sempre da dove proviene ciascuna, anche quando uno script ne richiama un altro, come fa \texttt{verify.sh} con \texttt{vnic.sh}. Fanno eccezione solo l'help e l'output di altri programmi, come \texttt{nping}. Nei messaggi di errore il prefisso è seguito da \texttt{errore:}, il messaggio è stampato sullo standard error e lo script termina con codice di uscita 1.
 
 \section{Demo}\label{sec:demo}
 
@@ -144,7 +126,7 @@ $ sudo scripts/vnic.sh down demo
 \end{lstlisting}
 \end{minipage}
 
-\texttt{traffic.sh} stampa sorgente e destinazione del traffico e il comando \texttt{nping} costruito a partire dalle opzioni. Seguono poi le righe di \texttt{nping}: una riga \texttt{SENT} per ogni pacchetto inviato e una riga \texttt{RCVD} per ogni risposta ricevuta (con indirizzi, porte e flag TCP: \texttt{S} per il SYN, \texttt{RA} per il RST con ACK). Senza programma tutti i SYN raggiungono \texttt{ns1}, che risponde a ciascuno con un RST, come previsto dalla prima riga della tabella~\ref{tab:atteso}. Infine \texttt{down} ferma la VM e rimuove l'infrastruttura.
+\texttt{traffic.sh} stampa sorgente e destinazione del traffico e il comando \texttt{nping} costruito a partire dalle opzioni. Seguono poi le righe di \texttt{nping}, cioè una riga \texttt{SENT} per ogni pacchetto inviato e una riga \texttt{RCVD} per ogni risposta ricevuta, con indirizzi, porte e flag TCP (\texttt{S} per il SYN, \texttt{RA} per il RST con ACK). Senza programma tutti i SYN raggiungono \texttt{ns1}, che risponde a ciascuno con un RST, come previsto dalla prima riga della tabella~\ref{tab:atteso}. Infine \texttt{down} ferma la VM e rimuove l'infrastruttura.
 
 \subsection{Filtro in eBPF}
 
@@ -166,7 +148,7 @@ $ sudo scripts/vnic.sh status
 \end{lstlisting}
 \end{minipage}
 
-A questo punto il filtro si prova con due serie di SYN: la prima verso la porta 9090, che deve restare raggiungibile, e la seconda verso la porta bloccata. Per osservare anche cosa entra ed esce dalla VM, in altri due terminali viene avviato \texttt{tcpdump} su \texttt{tap0} e su \texttt{tap1}, con il comando \texttt{sudo tcpdump -i tap0 -n -q -l ip}. Le opzioni \texttt{-n} e \texttt{-q} evitano la risoluzione dei nomi e riducono ogni pacchetto a una riga, \texttt{-l} stampa ogni riga appena catturata e il filtro \texttt{ip} limita la cattura ai pacchetti IPv4. La figura~\ref{fig:demo} mostra i tre terminali durante questa fase.
+A questo punto il filtro si prova con due serie di SYN, la prima verso la porta 9090, che deve restare raggiungibile, e la seconda verso la porta bloccata. Per osservare anche cosa entra ed esce dalla VM, in altri due terminali viene avviato \texttt{tcpdump} su \texttt{tap0} e su \texttt{tap1}, con il comando \texttt{sudo tcpdump -i tap0 -n -q -l ip}. Le opzioni \texttt{-n} e \texttt{-q} evitano la risoluzione dei nomi e riducono le informazioni stampate per ogni pacchetto, \texttt{-l} stampa ogni riga appena catturata e il filtro \texttt{ip} limita la cattura ai pacchetti IPv4. La figura~\ref{fig:demo} mostra i tre terminali durante questa fase.
 
 \begin{figure}[htbp]
     \centering
@@ -175,7 +157,7 @@ A questo punto il filtro si prova con due serie di SYN: la prima verso la porta 
     \label{fig:demo}
 \end{figure}
 
-Si può notare che i SYN verso la porta 9090 ricevono il RST mentre quelli verso la porta 8080 restano senza risposta, e infatti \texttt{nping} riporta 3 pacchetti persi su 3. Le catture su \texttt{tap0} e \texttt{tap1} (terminali di destra) mostrano invece dove si fermano: i tre SYN verso la porta 9090 e le relative risposte compaiono su entrambe le TAP, mentre i tre SYN verso la porta 8080, che compaiono solo su \texttt{tap0}, sono entrati nella VM ma il programma li ha scartati prima che raggiungessero \texttt{ens4}. Il risultato coincide con le ultime due righe della tabella~\ref{tab:atteso}.
+Si può notare che i SYN verso la porta 9090 ricevono il RST mentre quelli verso la porta 8080 restano senza risposta, e infatti \texttt{nping} riporta 3 pacchetti persi su 3. Le catture su \texttt{tap0} e \texttt{tap1} (terminali di destra) mostrano anche dove si fermano. I tre SYN verso la porta 9090 e le relative risposte compaiono su entrambe le TAP, mentre i tre SYN verso la porta 8080 compaiono solo su \texttt{tap0}, quindi sono entrati nella VM ma il programma li ha scartati prima che raggiungessero \texttt{ens4}. Il risultato coincide con le ultime due righe della tabella~\ref{tab:atteso}.
 
 \subsection{Filtro in P4}
 
@@ -239,7 +221,7 @@ Nell'ordine, gli errori riguardano:
 
 \section{Verifica automatica}\label{sec:verifica}
 
-L'esempio descritto finora richiede all'utente di interpretare l'output. Per questo ogni esempio in \texttt{examples/} contiene uno script \texttt{verify.sh}, che permette di controllare rapidamente che il tool funzioni sul proprio calcolatore.
+La demo descritta finora richiede all'utente di interpretare l'output. Per questo ogni esempio in \texttt{examples/} contiene uno script \texttt{verify.sh}, che permette di controllare rapidamente che il tool funzioni sul proprio calcolatore.
 \texttt{verify.sh} ripete i test fatti sopra e dà un esito, PASS o FAIL. La versione del programma si sceglie con l'argomento dello script (\texttt{ebpf}, il default, oppure \texttt{p4}). Lo script esegue le seguenti operazioni:
 \begin{itemize}
     \item avvia vnic con il programma scelto, usando come nome dell'istanza quello dell'esempio. Subito dopo registra con il comando \texttt{trap} l'esecuzione di \texttt{down} all'uscita, così che l'istanza venga fermata anche se lo script si interrompe per un errore;

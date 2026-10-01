@@ -1,0 +1,123 @@
+\chapter{Background}\label{ch:background}
+
+I concetti e gli strumenti su cui si basa vnic sono di due tipi. Il primo riguarda le SmartNIC e i modi per programmarle, cioè eBPF, XDP e P4, descritti nelle sezioni~\ref{sec:smartnic}--\ref{sec:p4}. Il secondo riguarda i componenti di Linux e l'hypervisor con cui vnic costruisce la rete virtuale e la VM, presentati nella sezione~\ref{sec:virt-rete}.
+
+\section{SmartNIC e offload delle funzioni di rete}\label{sec:smartnic}
+
+Una scheda di rete (NIC, Network Interface Card) tradizionale riceve e trasmette i frame e li trasferisce da e verso la memoria dell'host, dove vengono elaborati dallo stack di rete del sistema operativo, eseguito dalla CPU. Già le schede più comuni, però, svolgono al posto della CPU alcune operazioni fisse, dette offload. Le principali sono il calcolo dei checksum ti TCP e UDP e la segmentazione dei pacchetti TCP. In trasmissione, per esempio, il sistema operativo può consegnare alla scheda un unico pacchetto TCP fino a 64\,KB, che la scheda divide in frame della dimensione ammessa dalla rete, di solito 1500 byte. In ricezione può avvenire l'operazione inversa, cioè i frame di uno stesso flusso TCP vengono aggregati in un unico pacchetto prima di essere consegnati allo stack (GRO hashardware, Generic Receive Offload). Inoltre le schede hanno più code di ricezione, e con l'RSS (Receive Side Scaling) distribuiscono i pacchetti tra le code, e quindi tra i core della CPU, in base a un hash di indirizzi e porte, così che i pacchetti di uno stesso flusso finiscano sempre nella stessa coda.
+
+Una SmartNIC è una scheda di rete programmabile, che oltre a queste funzioni può eseguire logiche di rete scritte dall'utente, grazie a un FPGA, a un processore di rete o a dei core di uso generale montati sulla scheda~\cite{nvidia-smartnic}. Sulla scheda si possono così spostare funzioni che normalmente esegue la CPU dell'host, come filtri, bilanciamento del carico o la gestione delle reti virtuali, e i pacchetti scartati non raggiungono nemmeno l'host. Nei data center il vantaggio di queste schede è sottrarre carico di lavoro ai server e aumentarne quindi l'efficienza, dato che le loro risorse, spesso costose, restano concentrate sulle applicazioni per cui i server sono pensati. Microsoft, per esempio, con l'Accelerated Networking di Azure applica direttamente sulla scheda di rete le regole sul traffico delle macchine virtuali dei clienti, che altrimenti applicherebbe uno switch virtuale eseguito dalla CPU del server, e ottiene così una latenza più bassa e un minore uso della CPU~\cite{azure-accelnet}.
+
+Programmare una SmartNIC richiede in genere gli strumenti e i linguaggi del produttore della scheda. Un'alternativa è l'offload di programmi eBPF, supportato dal kernel Linux per le SmartNIC Netronome~\cite{cilium-bpf}. In questo caso il programma è lo stesso che verrebbe eseguito dal kernel e viene caricato con gli stessi comandi, ma il driver lo traduce nelle istruzioni del processore della scheda, che lo esegue su ogni pacchetto ricevuto. L'offload riguarda in particolare i programmi XDP, descritti nella sezione~\ref{sec:xdp}, e vnic emula proprio una scheda di questo tipo, cioè una NIC con offload XDP. Un altro linguaggio usato per programmare le SmartNIC, oltre che gli switch, è P4.
+
+\section{eBPF}\label{sec:ebpf}
+
+eBPF deriva dal BPF (Berkeley Packet Filter), nato per filtrare i pacchetti direttamente nel kernel~\cite{kernel-bpf-filter}. Un programma di cattura come \texttt{tcpdump}~\cite{tcpdump}, che mostra o salva su file i pacchetti che attraversano un'interfaccia, traduce il filtro scelto dall'utente, per esempio \texttt{tcp port 8080}, in un piccolo programma per una macchina virtuale interna al kernel, che lo esegue su ogni pacchetto. In questo modo vengono copiati nello spazio utente solo i pacchetti che interessano, invece che tutto il traffico.
+
+eBPF (extended BPF) estende questa macchina virtuale e la rende di uso generale, tanto che oggi è usata, oltre che per la rete, anche per il tracing e la sicurezza~\cite{ebpf-io}. I programmi si scrivono di solito in un sottoinsieme del C e vengono compilati in bytecode eBPF con \texttt{clang}, indicando \texttt{bpf} come architettura di destinazione (\texttt{-target bpf}). Il risultato è un file oggetto ELF, in cui ogni programma si trova in una sezione il cui nome è scelto nel sorgente con la macro \texttt{SEC}, per esempio \texttt{SEC("xdp")}. Nel resto della tesi, con programma o versione in eBPF si intende quindi un sorgente in C compilato in eBPF.
+
+Il file oggetto viene poi caricato nel kernel, per esempio con il comando \texttt{ip} o con la libreria \texttt{libbpf}. Ogni programma ha un tipo, che stabilisce in quale punto del kernel (hook) può essere agganciato e quali dati riceve. Per la rete i principali sono XDP, nel driver della scheda, e TC (traffic control), che si trova più avanti nel percorso dei pacchetti. Una volta agganciato, il programma viene eseguito a ogni evento dell'hook, che nel caso di XDP è la ricezione di un frame.
+
+Prima di agganciare il programma, il kernel lo controlla con il verifier, che ne analizza tutti i possibili percorsi di esecuzione e lo accetta solo se è sicuro. In particolare il programma deve terminare sempre, per cui i cicli devono avere un numero limitato di iterazioni, e può accedere alla memoria solo entro limiti noti. Per un programma di rete questo significa che, prima di leggere un header, deve controllare che l'header sia contenuto interamente nel pacchetto, confrontandone la fine con quella del pacchetto, indicata da \texttt{data\_end}. Il listing~\ref{lst:bg-drop-udp-c} mostra la funzione del filtro \texttt{drop-udp} in eBPF, che scarta i pacchetti UDP. Alle righe 10--12 il programma controlla che gli header Ethernet e IPv4 siano presenti per intero, altrimenti lascia passare il pacchetto, e solo dopo ne legge i campi. Senza questo controllo il verifier rifiuta il programma con l'errore ``invalid access to packet''.
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[language=C, basicstyle=\ttfamily\scriptsize, firstline=7, lastline=24, caption={Funzione del filtro \texttt{drop-udp} in eBPF}, label={lst:bg-drop-udp-c}]{../examples/drop-udp/drop_udp.c}
+\end{minipage}
+
+Oltre al pacchetto, un programma può usare le mappe, cioè strutture dati chiave-valore, come array e tabelle hash, che restano in memoria tra un'esecuzione e l'altra e sono accessibili anche dallo spazio utente, per esempio con il comando \texttt{bpftool}. Servono a mantenere uno stato, come dei contatori, o a leggere una configurazione scritta dall'utente. Alcuni tipi di mappa, come \texttt{BPF\_MAP\_TYPE\_PERCPU\_ARRAY}, hanno una copia per ogni CPU, così che più CPU possano aggiornare lo stesso contatore senza conflitti. Il programma può infine chiamare alcune funzioni del kernel, dette helper, per esempio per redirigere un pacchetto verso un'altra interfaccia.
+
+\section{XDP: eXpress Data Path}\label{sec:xdp}
+
+XDP (eXpress Data Path) è l'hook per programmi eBPF più vicino all'hardware nel percorso di ricezione~\cite{cilium-bpf}. Il programma viene eseguito dal driver della scheda di rete su ogni frame appena ricevuto, prima che il kernel allochi la struttura (\texttt{sk\_buff}) con cui rappresenta i pacchetti nel resto dello stack di rete. Per questo scartare o rimandare indietro un pacchetto con XDP costa molto poco, dato che il kernel non ha ancora fatto quasi nessun lavoro su di esso, e infatti XDP è usato per applicazioni come la protezione dagli attacchi DDoS e il bilanciamento del carico.
+
+Un programma XDP può essere eseguito in tre modalità, che corrispondono a tre punti diversi del percorso di ricezione, come mostra la figura~\ref{fig:xdp-modalita}:
+\begin{itemize}
+    \item \textbf{nativa}: il programma è eseguito dal driver, come descritto sopra. Richiede che il driver supporti XDP, cosa che fanno i driver delle schede più diffuse e anche \texttt{virtio\_net}, il driver delle schede di rete virtuali usate da QEMU;
+    \item \textbf{generica}: il programma è eseguito dal kernel dopo l'allocazione della \texttt{sk\_buff}, per cui funziona con qualunque driver ma perde gran parte del vantaggio in prestazioni. Serve soprattutto a provare i programmi quando il driver non supporta XDP;
+    \item \textbf{offload}: il programma è eseguito dalla scheda stessa, come visto nella sezione~\ref{sec:smartnic}, per cui i pacchetti scartati non raggiungono nemmeno l'host.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \input{figures/xdp-modalita}
+    \caption{Punti del percorso di ricezione in cui può essere eseguito un programma XDP}
+    \label{fig:xdp-modalita}
+\end{figure}
+
+Il programma è essenzialmente lo stesso in tutte e tre le modalità, cambia solo dove viene eseguito, e questo permette a vnic di emulare la modalità offload con quella nativa, all'interno della VM che fa da scheda.
+
+Il programma riceve come argomento un puntatore a una struttura \texttt{xdp\_md}, che descrive il frame ricevuto. I campi usati in questa tesi sono:
+\begin{itemize}
+    \item \texttt{data} e \texttt{data\_end}: gli indirizzi di inizio e di fine del frame, a partire dall'header Ethernet. Tra i due il programma può leggere e anche modificare il contenuto del frame;
+    \item \texttt{ingress\_ifindex}: l'indice dell'interfaccia da cui è arrivato il frame;
+    \item \texttt{rx\_queue\_index}: l'indice della coda di ricezione da cui è arrivato il frame.
+\end{itemize}
+
+Il valore restituito dal programma è l'azione da applicare al frame~\cite{ebpf-docs-xdp}. Le azioni sono cinque, e nel resto della tesi sono indicate anche senza il prefisso \texttt{XDP\_}:
+\begin{itemize}
+    \item \texttt{XDP\_PASS}: il frame prosegue nello stack di rete, come se non ci fosse alcun programma;
+    \item \texttt{XDP\_DROP}: il frame viene scartato;
+    \item \texttt{XDP\_ABORTED}: il frame viene scartato come con DROP, ma l'azione indica un errore del programma, e il kernel lo segnala con il tracepoint \texttt{xdp:xdp\_exception}. I tracepoint sono eventi che il kernel emette in punti precisi del codice e che si possono attivare per capire cosa succede al suo interno;
+    \item \texttt{XDP\_TX}: il frame viene rimandato indietro dalla stessa interfaccia da cui è arrivato, di solito dopo averne modificato gli header, per esempio scambiando gli indirizzi MAC di sorgente e destinazione;
+    \item \texttt{XDP\_REDIRECT}: il frame viene trasmesso da un'altra interfaccia, oppure consegnato a un'altra CPU o a un programma in spazio utente. La destinazione viene scelta prima di restituire l'azione, con l'helper \texttt{bpf\_redirect} o con una mappa.
+\end{itemize}
+
+Infine un programma XDP si carica su un'interfaccia con il comando \texttt{ip} del pacchetto \texttt{iproute2}, nella forma \texttt{ip link set <interfaccia> xdp obj <file.o> sec <sezione>}, cioè indicando il file oggetto e la sezione in cui si trova il programma~\cite{cilium-bpf}. Con la parola chiave \texttt{xdp} è il kernel a scegliere la modalità, mentre con \texttt{xdpdrv}, \texttt{xdpgeneric} o \texttt{xdpoffload} la si può imporre.
+
+\section{P4}\label{sec:p4}
+
+P4 (Programming Protocol-independent Packet Processors) è un linguaggio per programmare il piano dati dei dispositivi di rete. Il piano dati è la parte del dispositivo che elabora ogni singolo pacchetto, mentre il piano di controllo, di solito un software separato, ne decide la configurazione, per esempio le regole di inoltro o di filtraggio. P4 è nato per gli switch programmabili, ma oggi può essere compilato anche per SmartNIC, FPGA e switch software.
+
+A differenza del C, P4 è un linguaggio dichiarativo, in cui il programma descrive quali header può avere un pacchetto, come riconoscerli e cosa fare in base al loro contenuto, mentre il modo in cui farlo su un certo dispositivo lo decide il compilatore. Inoltre P4 non conosce alcun protocollo, per cui anche gli header più comuni, come Ethernet e IPv4, vanno definiti nel programma campo per campo, indicando la dimensione in bit di ciascuno. Un programma P4 è composto principalmente da:
+\begin{itemize}
+    \item \textbf{header}: le strutture dei protocolli, con i loro campi;
+    \item \textbf{parser}: una macchina a stati che legge il pacchetto dall'inizio ed estrae gli header uno dopo l'altro con \texttt{extract}. In ogni stato, in base al valore di un campo appena estratto (\texttt{select}), si passa allo stato successivo, oppure si termina accettando il pacchetto (\texttt{accept}) o rifiutandolo (\texttt{reject});
+    \item \textbf{control}: il blocco che elabora gli header estratti. Contiene le azioni, cioè funzioni che modificano gli header o decidono cosa fare del pacchetto, le tabelle, e il blocco \texttt{apply}, che ne stabilisce l'ordine di esecuzione;
+    \item \textbf{tabelle match-action}: ogni tabella confronta alcuni campi del pacchetto, la chiave, con le proprie voci, ed esegue l'azione associata alla voce che corrisponde, oppure un'azione di default se nessuna corrisponde. Le voci vengono inserite dal piano di controllo mentre il programma è in esecuzione, oppure fissate nel programma come costanti.
+\end{itemize}
+
+Quali blocchi compongono il programma e come sono collegati tra loro non lo stabilisce il linguaggio, ma l'architettura del dispositivo, o modello, fornita insieme al compilatore, che descrive i blocchi programmabili, i loro parametri e le funzionalità aggiuntive disponibili, come i contatori. Un programma è quindi scritto per un modello specifico, e termina con la dichiarazione \texttt{main}, che assegna i blocchi scritti dall'utente a quelli previsti dal modello.
+
+Il compilatore di riferimento è \texttt{p4c}, che analizza il programma con una parte comune e lo traduce con un backend diverso per ciascun tipo di dispositivo. Il backend \texttt{p4c-ebpf} traduce il programma P4 in C, che viene poi compilato in eBPF con \texttt{clang} come un qualsiasi programma eBPF~\cite{p4c-ebpf}. Le tabelle diventano mappe, e con l'opzione \texttt{-{}-xdp} il C generato è un programma XDP. vnic usa il modello \texttt{ebpfFilter} del backend, pensato per i filtri, che prevede solo due blocchi:
+\begin{itemize}
+    \item un parser, che estrae gli header del pacchetto;
+    \item un control, che riceve gli header estratti e imposta un parametro booleano di uscita. Se vale \texttt{true} il pacchetto viene accettato (PASS), altrimenti viene scartato (DROP).
+\end{itemize}
+
+Il listing~\ref{lst:bg-drop-udp-p4} mostra il filtro \texttt{drop-udp} in P4, equivalente a quello in eBPF del listing~\ref{lst:bg-drop-udp-c}, senza le definizioni degli header.
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[language=P4, basicstyle=\ttfamily\scriptsize, linerange={44-57,63-75,78-78}, caption={Parser e control del filtro \texttt{drop-udp} in P4}, label={lst:bg-drop-udp-p4}]{../examples/drop-udp/drop_udp.p4}
+\end{minipage}
+
+Il parser estrae sempre l'header Ethernet e, solo se il campo \texttt{etherType} indica IPv4, passa allo stato \texttt{parse\_ipv4}, dove estrae anche l'header IPv4. Il control imposta \texttt{pass} a \texttt{true} e lo porta a \texttt{false}, scartando il pacchetto, solo se l'header IPv4 è stato estratto e il protocollo è UDP. Infine la dichiarazione \texttt{main} assegna il parser e il control ai due blocchi del modello \texttt{ebpfFilter}. Va notato che, a differenza della versione in eBPF, il programma non controlla la lunghezza del pacchetto prima di leggere un header, perché in P4 ci si limita a dichiarare quali header estrarre.
+
+\texttt{p4c} è distribuito anche come immagine per container~\cite{p4c-docker}. Un container esegue un programma isolato dal resto del sistema, con un proprio filesystem preso da un'immagine che contiene il programma e tutto ciò che gli serve, e si avvia con strumenti come podman o docker.
+
+\section{Strumenti di virtualizzazione in Linux}\label{sec:virt-rete}
+
+vnic costruisce la rete e la scheda emulata solo con componenti del kernel Linux e con l'hypervisor QEMU. I componenti di rete si creano e si configurano tutti con il comando \texttt{ip}, lo stesso usato per caricare i programmi XDP.
+
+\subsection{Network namespace}
+
+Un network namespace è una copia isolata dello stack di rete del kernel, con le proprie interfacce, i propri indirizzi IP, le proprie tabelle di routing e le proprie regole del firewall~\cite{man-ipnetns}. Ogni processo appartiene a un namespace e vede solo le interfacce di quest'ultimo. All'avvio esiste solo il namespace di default, quello dell'host, e con \texttt{ip netns add <nome>} se ne possono creare altri, in cui eseguire un comando con \texttt{ip netns exec <nome> <comando>}. In questo modo su un solo calcolatore si possono simulare più host distinti, ciascuno con la propria configurazione di rete, senza bisogno di macchine virtuali.
+
+\subsection{veth, bridge e TAP}
+
+Per collegare tra loro i namespace, e i namespace con una VM, si usano tre tipi di interfacce virtuali.
+
+Una veth (virtual Ethernet) viene creata sempre in coppia, e ciò che viene trasmesso da un capo della coppia (veth pair) viene ricevuto dall'altro, come se i due fossero collegati da un cavo~\cite{man-veth}. I due capi possono trovarsi in namespace diversi, per cui una veth pair è il modo più semplice per collegare un namespace a quello dell'host.
+
+Un bridge è uno switch software che lavora a livello 2 dello stack protocollare~\cite{kernel-bridge}. Le interfacce collegate al bridge, con il comando \texttt{ip link set <interfaccia> master <bridge>}, ne diventano le porte, e il bridge inoltra i frame da una porta all'altra in base al MAC di destinazione. Per sapere su quale porta si trova ciascun indirizzo, il bridge impara dai frame ricevuti, registrando da quale porta arriva ogni MAC sorgente.
+
+Un'interfaccia TAP, infine, è un'interfaccia virtuale collegata non a un cavo ma a un programma in spazio utente~\cite{kernel-tuntap}. I frame che il kernel trasmette sulla TAP vengono letti dal programma, e viceversa i frame scritti dal programma arrivano al kernel come se fossero stati ricevuti dall'interfaccia. Esiste anche un tipo analogo, TUN, che lavora con pacchetti IP invece che con frame Ethernet. Le TAP sono usate in particolare dagli hypervisor come QEMU, per collegare la scheda di rete di una VM alla rete dell'host.
+
+\subsection{QEMU, KVM e virtio-net}
+
+QEMU è un hypervisor, ovvero un programma che crea ed esegue macchine virtuali simulando un intero calcolatore, con processore, memoria, dischi e schede di rete, su cui si può avviare un sistema operativo, detto guest~\cite{qemu-about}. Da solo QEMU emula anche il processore, traducendo le istruzioni del guest in istruzioni dell'host, ma su Linux può usare KVM (Kernel-based Virtual Machine), un modulo del kernel che sfrutta le estensioni per la virtualizzazione dei processori e permette di eseguire il codice del guest direttamente sulla CPU~\cite{kvm}. In questo caso QEMU si occupa solo delle periferiche, e la VM è molto più veloce.
+
+Anche le periferiche, però, hanno un costo se vengono emulate fedelmente, perché QEMU deve riprodurre il comportamento di un dispositivo reale. Per questo nelle VM si usano di solito i dispositivi virtio, uno standard per dispositivi pensati apposta per le macchine virtuali~\cite{virtio-spec}. Il guest sa di essere virtualizzato e usa un driver dedicato, che scambia i dati con l'hypervisor attraverso delle code in memoria condivisa. La scheda di rete virtio, virtio-net, ha almeno una coda di ricezione e una di trasmissione, e può averne di più se l'hypervisor lo prevede. Come una scheda reale, inoltre, può concordare con l'host degli offload, come il calcolo dei checksum e la segmentazione, per cui guest e host si possono scambiare pacchetti TCP aggregati fino a 64\,KB invece di singoli frame. Nel kernel Linux il driver di virtio-net è \texttt{virtio\_net}. Le statistiche, le code e gli offload di una scheda di rete, reale o virtuale, si possono infine consultare con il comando \texttt{ethtool}, rispettivamente con le opzioni \texttt{-S}, \texttt{-l} e \texttt{-k}~\cite{man-ethtool}.
+
+\subsection{cloud-init}
+
+Le immagini cloud delle distribuzioni Linux includono cloud-init~\cite{cloud-init}, un servizio che durante il boot configura la VM, per esempio creando utenti e file o eseguendo dei comandi, in base a dei dati forniti dall'esterno, di solito dal provider cloud. Fuori da un cloud questi dati possono essere dei file salvati in un disco con etichetta \texttt{cidata} collegato alla VM, come lo \texttt{user-data}, con la configurazione vera e propria, e il \texttt{meta-data}, con l'identificativo dell'istanza. cloud-init applica la configurazione solo al primo avvio di ogni istanza, che riconosce proprio da questo identificativo.

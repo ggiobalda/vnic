@@ -1,0 +1,12 @@
+\begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{SmartNIC} & \textbf{vnic} \\
+    \midrule
+    scheda di rete & VM QEMU/KVM \\
+    porta di rete & \texttt{ens3} \\
+    programma XDP eseguito sulla scheda & programma caricato su \texttt{ens3} \\
+    percorso interno e collegamento con l'host & \texttt{brVM} e \texttt{ens4} \\
+    rete esterna & namespace \texttt{ns0} \\
+    server che monta la scheda & namespace \texttt{ns1} \\
+    \bottomrule
+\end{tabular}
