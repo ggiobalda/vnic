@@ -119,7 +119,7 @@ Il log serve anche a capire quando la VM è pronta. Al termine della configurazi
 
 Per trasformare la VM in una NIC bastano pochi comandi, eseguiti al termine del boot, che attivano \texttt{ens3} ed \texttt{ens4}, le collegano a un bridge e caricano il programma su \texttt{ens3}. vnic li fa eseguire a cloud-init, passandogli la configurazione in un disco con etichetta \texttt{cidata}. Il file principale è lo \texttt{user-data}, riportato nel listing~\ref{lst:user-data}.
 
-\begin{lstlisting}[caption={File \texttt{user-data} generato da vnic con un programma in C (contenuto base64 abbreviato)}, label={lst:user-data}]
+\begin{lstlisting}[caption={File \texttt{user-data} generato da vnic (contenuto base64 abbreviato)}, label={lst:user-data}]
 #cloud-config
 password: smartnic
 chpasswd:
